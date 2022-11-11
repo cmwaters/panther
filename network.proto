@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package consensus;
+option go_package = "github.com/cmwaters/consensus/consensus";
+
+service Receiver {
+    rpc Receive(ReceiveRequest) returns (ReceiveResponse);
+}
+
+service Sender {
+    rpc Broadcast(BroadcastRequest) returns (BroadcastResponse);
+}
+
+message ReceiveRequest {
+    Msg msg = 1;
+}
+
+message ReceiveResponse {}
+
+message BroadcastRequest {
+    Msg msg = 1;
+}
+
+message BroadcastResponse {}
+
+message Msg {
+    oneof sum {
+        Proposal proposal = 1;
+        Vote vote = 2;
+        Payload payload = 3; 
+    }
+}
+
+message Proposal {
+    uint64 height = 1;
+    uint32 round = 2;
+    // a proposal may refer to a block proposed by another 
+    // proposer in a previous round that the current proposer
+    // is locked on
+    uint32 reference_round = 3;
+    bytes signature = 5;
+}
+
+message Vote {
+    Type type = 1;
+    uint64 height = 2;
+    uint32 round = 3;
+    uint32 validator_index = 4;
+    bytes block_id = 5;
+    bytes signature = 6;
+
+    enum Type {
+        UNKNOWN = 0;
+        PREVOTE = 1;
+        PRECOMMIT = 2;
+    }
+}
+
+message Payload {
+    uint64 height = 1;
+    uint32 round = 2;
+    repeated bytes data = 3;
+}
+
+
+
+
+

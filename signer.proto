@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package consensus;
+option go_package = "github.com/cmwaters/consensus/consensus";
+
+service Signer {
+    rpc Sign(SignRequest) returns (SignResponse);
+    rpc Handshake(SignerHandshakeRequest) returns (SignerHandshakeResponse);
+}
+
+message SignRequest {
+    Type type = 1;
+    uint64 height = 2;
+    uint32 round = 3;
+    bytes block_id = 4;
+    string chain_id = 5; 
+
+    enum Type {
+        UNKNOWN = 0;
+        PROPOSAL = 1;
+        PREVOTE = 2;
+        PRECOMMIT = 3;
+    }
+}
+
+message SignResponse {
+    bytes signature = 1;
+}
+
+message SignerHandshakeRequest {
+    uint64 height = 1;
+    uint32 version = 2;
+    string chain_id = 3;
+}
+
+message SignerHandshakeResponse {
+    bytes pub_key = 1;
+}
