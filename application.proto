@@ -1,11 +1,34 @@
 syntax = "proto3";
 
 package consensus;
-option go_package = "github.com/cmwaters/consensus/consensus";
+option go_package = "github.com/cmwaters/consensus";
 
 import "google/protobuf/duration.proto";
 
-service StateMachine {
+// The application supports the relevant business logic that uses the consensus
+// engine for decentralized state machine replication. Specifically an application
+// must be responsible for at least three things:
+//
+// 1) Forming and aggregation of transactions which are bundled together in a payload
+//    and proposed by the proposer of that round. Applications may also perform
+//    transcation dissemination so that all participants are aware of transactions.
+//    This is useful to ensure transactions are committed faster and for content
+//    addressable payloads which only contain the hashes of transactions.
+//
+// 2) Validation of proposed data. Specifically this must conform with the coherence
+//    property - a correct node shold never propose a transaction that another correct
+//    process would deem as invalid. 
+//
+// 3) Execution (and optionally the persistence) of tranasctions finalized by the
+//    consensus engine. For state machine replication, this must be a deterministic
+//    process such that all correct processes upon receiving the same transactions will
+//    always progress to the same state. One can use hashes as a method to detect non-
+//    determinsim.
+//
+// Additionally, the application ideally has a subcomponent responsible for syncing to 
+// the height that the rest of the network is at. This involves the sending of payloads 
+// and their respective signatures for other nodes to verify.
+service Application {
     rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
     rpc ProposeData(ProposeDataRequest) returns (ProposeDataResponse);
     rpc ValidateData(ValidateDataRequest) returns (ValidateDataResponse);
@@ -17,10 +40,11 @@ message HandshakeRequest {
 }
 
 message HandshakeResponse {
-    uint64 height = 1;
-    string chain_id = 2;
-    ValidatorSet validator_set = 3;
-    SynchronyParams params = 4;
+    string chain_id = 1;
+    uint64 height = 2;
+    uint32 round = 3;
+    ValidatorSet validator_set = 4;
+    SynchronyParams params = 5;
 }
 
 message ProposeDataRequest {
@@ -72,6 +96,7 @@ message ValidatorSet {
 message Validator {
     bytes pub_key = 1;
     uint64 voting_power = 2; 
+    uint64 proposer_priority = 3;
 }
 
 message SynchronyParams {

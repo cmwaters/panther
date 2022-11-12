@@ -1,8 +1,14 @@
 syntax = "proto3";
 
 package consensus;
-option go_package = "github.com/cmwaters/consensus/consensus";
+option go_package = "github.com/cmwaters/consensus";
 
+// Signer is a service that securely manages a nodes private key
+// and signs votes and proposals for the consensus engine.
+// 
+// The signer should ensure that the node never double signs. This
+// usually means implementing a high-water mark tracking the height,
+// round and type of vote. 
 service Signer {
     rpc Sign(SignRequest) returns (SignResponse);
     rpc Handshake(SignerHandshakeRequest) returns (SignerHandshakeResponse);
@@ -29,8 +35,9 @@ message SignResponse {
 
 message SignerHandshakeRequest {
     uint64 height = 1;
-    uint32 version = 2;
-    string chain_id = 3;
+    uint32 round = 2;
+    uint32 version = 3;
+    string chain_id = 4;
 }
 
 message SignerHandshakeResponse {

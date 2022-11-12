@@ -1,12 +1,18 @@
 syntax = "proto3";
 
 package consensus;
-option go_package = "github.com/cmwaters/consensus/consensus";
+option go_package = "github.com/cmwaters/consensus";
 
+// Receiver is implemented by the consensus engine. The networking
+// layer is responsible for calling the `Receive` method in order
+// to pass consensus messages from another peer
 service Receiver {
     rpc Receive(ReceiveRequest) returns (ReceiveResponse);
 }
 
+// Sender is functionality provided by the networking layer
+// that allows the consensus engine to gossip votes, proposals
+// and payloads to all other nodes within the network
 service Sender {
     rpc Broadcast(BroadcastRequest) returns (BroadcastResponse);
 }
@@ -15,7 +21,19 @@ message ReceiveRequest {
     Msg msg = 1;
 }
 
-message ReceiveResponse {}
+message ReceiveResponse {
+    uint64 height = 1;
+    uint32 round = 2;
+    Step step = 3;
+
+    enum Step {
+        UNKNOWN = 0;
+        PROPOSE = 1;
+        PREVOTE = 2;
+        PRECOMMIT = 3;
+        COMMIT = 4;
+    }
+}
 
 message BroadcastRequest {
     Msg msg = 1;
@@ -38,7 +56,7 @@ message Proposal {
     // proposer in a previous round that the current proposer
     // is locked on
     uint32 reference_round = 3;
-    bytes signature = 5;
+    bytes signature = 4;
 }
 
 message Vote {
