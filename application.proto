@@ -40,7 +40,7 @@ message HandshakeRequest {
 }
 
 message HandshakeResponse {
-    string chain_id = 1;
+    string namespace = 1;
     uint64 height = 2;
     uint32 round = 3;
     ValidatorSet validator_set = 4;

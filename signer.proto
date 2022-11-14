@@ -16,14 +16,13 @@ service Signer {
 
 message SignRequest {
     Type type = 1;
-    uint64 height = 2;
-    uint32 round = 3;
-    bytes block_id = 4;
-    string chain_id = 5; 
+    fixed64 height = 2;
+    fixed32 round = 3;
+    bytes payload_id = 4;
+    string namespace = 5; 
 
     enum Type {
         UNKNOWN = 0;
-        PROPOSAL = 1;
         PREVOTE = 2;
         PRECOMMIT = 3;
     }
@@ -37,7 +36,7 @@ message SignerHandshakeRequest {
     uint64 height = 1;
     uint32 round = 2;
     uint32 version = 3;
-    string chain_id = 4;
+    string namespace = 4;
 }
 
 message SignerHandshakeResponse {

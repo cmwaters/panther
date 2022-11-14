@@ -43,28 +43,31 @@ message BroadcastResponse {}
 
 message Msg {
     oneof sum {
-        Proposal proposal = 1;
+        Payload payload = 1; 
         Vote vote = 2;
-        Payload payload = 3; 
     }
 }
 
-message Proposal {
+// Payload is the value, v, proposed by the proposer in any given round
+message Payload {
     uint64 height = 1;
     uint32 round = 2;
-    // a proposal may refer to a block proposed by another 
-    // proposer in a previous round that the current proposer
-    // is locked on
-    uint32 reference_round = 3;
-    bytes signature = 4;
+    // this is the signature from the proposer of this payload
+    bytes signature = 3;
+    repeated bytes data = 4;
 }
 
 message Vote {
     Type type = 1;
     uint64 height = 2;
     uint32 round = 3;
-    uint32 validator_index = 4;
-    bytes block_id = 5;
+    // a voter may refer to a payload from a previous round that the voter is
+    // locked on. This is used to find out the payload_id that the signature
+    // refers to.
+    uint32 reference_round = 4;
+    // validators are ordered in a set by voting power. Only the index is necessary
+    // to retrieve the validators public key
+    uint32 validator_index = 5;
     bytes signature = 6;
 
     enum Type {
@@ -72,12 +75,6 @@ message Vote {
         PREVOTE = 1;
         PRECOMMIT = 2;
     }
-}
-
-message Payload {
-    uint64 height = 1;
-    uint32 round = 2;
-    repeated bytes data = 3;
 }
 
 
