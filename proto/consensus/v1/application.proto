@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package consensus.v1;
+option go_package = "github.com/cmwaters/halo/consensus";
+
+import "consensus.proto";
+
+// The application supports the relevant business logic that uses the consensus
+// engine for decentralized state machine replication. Specifically an application
+// must be responsible for at least three things:
+//
+// 1) Forming and aggregation of transactions which are bundled together in a payload
+//    and proposed by the proposer of that round. Applications may also perform
+//    transcation dissemination so that all participants are aware of transactions.
+//    This is useful to ensure transactions are committed faster and for content
+//    addressable payloads which only contain the hashes of transactions.
+//
+// 2) Validation of proposed data. Specifically this must conform with the coherence
+//    property - a correct node shold never propose a transaction that another correct
+//    process would deem as invalid. 
+//
+// 3) Execution (and optionally the persistence) of tranasctions finalized by the
+//    consensus engine. For state machine replication, this must be a deterministic
+//    process such that all correct processes upon receiving the same transactions will
+//    always progress to the same state. One can use hashes as a method to detect non-
+//    determinsim.
+//
+// Additionally, the application ideally has a subcomponent responsible for syncing to 
+// the height that the rest of the network is at. This involves the sending of payloads 
+// and their respective signatures for other nodes to verify.
+service Application {
+    rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+    rpc ProposeData(ProposeDataRequest) returns (ProposeDataResponse);
+    rpc ValidateData(ValidateDataRequest) returns (ValidateDataResponse);
+    rpc FinalizeData(FinalizeDataRequest) returns (FinalizeDataResponse);
+}
+
+message HandshakeRequest {
+    uint32 version = 1;
+}
+
+message HandshakeResponse {
+    string namespace = 1;
+    uint64 height = 2;
+    uint32 round = 3;
+    MemberSet member_set = 4;
+    Parameters params = 5;
+}
+
+message ProposeDataRequest {
+    uint64 height = 1;
+}
+
+message ProposeDataResponse {
+    bytes data = 1;
+}
+
+message ValidateDataRequest {
+    uint64 height = 1;
+    uint32 round = 2;
+    Member proposer = 3;
+    bytes data = 4;
+}
+
+message ValidateDataResponse {
+    Status status = 1;
+
+    enum Status {
+        UNKNOWN = 0;
+        ACCEPT = 1;
+        REJECT = 2;
+    }
+}
+
+message FinalizeDataRequest {
+    uint64 height = 1;
+    repeated bytes signatures = 2;
+    bytes data = 3;
+    MemberSet member_set = 4;
+}
+
+message FinalizeDataResponse {
+    repeated MemberUpdate member_updates = 1; 
+    Parameters params = 2;
+    bool terminate = 3;
+}
+
+message MemberUpdate {
+    bytes public_key = 1;
+    uint32 voting_power = 2;
+}
