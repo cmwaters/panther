@@ -14,9 +14,7 @@ func (e *Engine) receiveProposal(ctx context.Context) error {
 	attempts := 1
 	for {
 		state := e.executor.state()
-		msg, err := e.gossip.ReceiveProposal(ctx, &ReceiveProposalRequest{
-			State: state,
-		})
+		proposal, err := e.gossip.ReceiveProposal(ctx)
 		switch status.Code(err) {
 		case codes.OK:
 		// retry with exponential backoff when receiving these error codes
@@ -32,7 +30,7 @@ func (e *Engine) receiveProposal(ctx context.Context) error {
 			return fmt.Errorf("receiving proposal: %w", err)
 		}
 
-		if err := e.handleProposal(ctx, msg.Proposal, state); err != nil {
+		if err := e.handleProposal(ctx, proposal, state); err != nil {
 			e.logger.Err(err).
 				Uint64("height", state.Height).
 				Uint32("round", state.Round).
@@ -49,9 +47,7 @@ func (e *Engine) receiveVotes(ctx context.Context) error {
 	attempts := 1
 	for {
 		state := e.executor.state()
-		msg, err := e.gossip.ReceiveVote(ctx, &ReceiveVoteRequest{
-			State: state,
-		})
+		vote, err := e.gossip.ReceiveVote(ctx)
 		switch status.Code(err) {
 		case codes.OK:
 		// retry with exponential backoff when receiving these error codes
@@ -68,11 +64,11 @@ func (e *Engine) receiveVotes(ctx context.Context) error {
 		}
 
 		go func() {
-			if err := e.handleVote(ctx, msg.Vote, state); err != nil {
+			if err := e.handleVote(ctx, vote, state); err != nil {
 				e.logger.Err(err).
-					Uint64("height", msg.Vote.Height).
-					Uint32("round", msg.Vote.Round).
-					Uint32("member", msg.Vote.MemberIndex).
+					Uint64("height", vote.Height).
+					Uint32("round", vote.Round).
+					Uint32("member", vote.MemberIndex).
 					Msg("handling vote")
 				if isUnrecoverable(err) {
 					_ = e.Stop()
@@ -104,16 +100,8 @@ func (e *Engine) handleProposal(ctx context.Context, proposal *Proposal, state *
 	}
 
 	// Allow the app to verify the proposal
-	resp, err := e.app.ValidateData(ctx, &ValidateDataRequest{
-		Height:   proposal.Height,
-		Round:    proposal.Round,
-		Proposer: e.verifier.GetProposer(proposal.Round),
-		Data:     proposal.Data,
-	})
+	err := e.app.Verify(ctx, proposal.Height, proposal.Data)
 	if err != nil {
-		e.Stop()
-	}
-	if resp.Status != ValidateDataResponse_ACCEPT {
 		// TODO: the proposal should be cached so that it is automatically rejected
 		// if it is to be received again.
 		return nil

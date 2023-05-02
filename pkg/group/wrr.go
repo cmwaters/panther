@@ -1,4 +1,4 @@
-package consensus
+package group
 
 import (
 	"bytes"
@@ -7,12 +7,14 @@ import (
 	"sort"
 )
 
+var _ Group = &WeightedRoundRobinGroup{}
+
 // Group is a collection of members that manages membership and follows
 // the weighted round robin leader election algorithm.
-type Group struct {
-	members          []*Member
+type WeightedRoundRobinGroup struct {
+	members          []Member
 	roundWeightings  []roundWeighting
-	totalVotingPower int64
+	totalVotingPower uint64
 }
 
 type roundWeighting struct {
@@ -21,30 +23,30 @@ type roundWeighting struct {
 }
 
 // NewGroup creates a group based from a MemberSet
-func NewGroup(memberSet *MemberSet) (*Group, error) {
-	if len(memberSet.Members) == 0 {
+func NewWeighterRoundRobinGroup(memberSet []Member) (*WeightedRoundRobinGroup, error) {
+	if len(memberSet) == 0 {
 		return nil, errors.New("memberset must have at least one member")
 	}
 
-	var totalVotingPower int64 = 0
+	var totalVotingPower uint64 = 0
 	firstRoundWeighting := roundWeighting{
-		memberProposerPriorities: make([]int64, len(memberSet.Members)),
+		memberProposerPriorities: make([]int64, len(memberSet)),
 	}
-	var highestProposerPriority int64 = 0
-	for idx, m := range memberSet.Members {
-		if m.VotingPower == 0 {
+	var highestProposerPriority uint32 = 0
+	for idx, m := range memberSet {
+		if m.Weight() == 0 {
 			return nil, fmt.Errorf("member %d has 0 voting power", idx)
 		}
-		totalVotingPower += int64(m.VotingPower)
-		firstRoundWeighting.memberProposerPriorities[idx] = m.ProposerPriority
-		if m.ProposerPriority > highestProposerPriority {
-			highestProposerPriority = m.ProposerPriority
+		totalVotingPower += uint64(m.Weight())
+		firstRoundWeighting.memberProposerPriorities[idx] = int64(m.Weight())
+		if m.Weight() > highestProposerPriority {
+			highestProposerPriority = m.Weight()
 			firstRoundWeighting.proposerIndex = idx
 		}
 	}
 
-	g := &Group{
-		members:          memberSet.Members,
+	g := &WeightedRoundRobinGroup{
+		members:          memberSet,
 		roundWeightings:  []roundWeighting{firstRoundWeighting},
 		totalVotingPower: totalVotingPower,
 	}
@@ -57,23 +59,23 @@ func NewGroup(memberSet *MemberSet) (*Group, error) {
 
 // GetProposer returns a copy of the member that is the proposer of the
 // given round.
-func (g *Group) GetProposer(round uint32) *Member {
+func (g *WeightedRoundRobinGroup) Proposer(round uint) Member {
 	// make sure we have calculated sufficient rounds. This is a noop if
 	// we have already calculated the proposer priorities for that round
-	g.addRound(round)
+	g.addRound(uint32(round))
 
 	// Return a copy of the member struct that is the proposer for that
 	// round i.e. the member with the highest proposer priority
-	return g.members[g.roundWeightings[int(round)].proposerIndex].Copy()
+	return g.members[g.roundWeightings[int(round)].proposerIndex]
 }
 
 // GetMember returns a copy of the member struct from a given index
-func (g *Group) GetMember(index uint32) *Member {
-	if index >= uint32(len(g.members)) {
+func (g *WeightedRoundRobinGroup) Member(index uint) Member {
+	if index >= uint(len(g.members)) {
 		return nil
 	}
 
-	return g.members[index].Copy()
+	return g.members[index]
 }
 
 // IncrementHeight is called when a proposal is committed and the group progress to
@@ -85,9 +87,10 @@ func (g *Group) GetMember(index uint32) *Member {
 //
 // The fromRound is what round's proposer priorites should be copied across to the new
 // set of members. This is the round of the proposal that was eventually committed.
-func (g *Group) IncrementHeight(fromRound uint32, memberUpdates []*MemberUpdate) error {
-	// copy across the proposer priorities from the fromRound to the members
-	g.updateProposerPrioritiesToRound(fromRound)
+func (g *WeightedRoundRobinGroup) IncrementHeight(fromRound uint32, memberUpdates []Member) error {
+	// get the proposer and proposer priorities for the round that the proposal was committed
+	pp := g.getProposerPriorities(fromRound)
+	lastProposer := g.Proposer(uint(fromRound))
 
 	// first we iterate through the deletions. Deletions are currently the only manner
 	// that this function can error. We cannot mutate state until we know that it can't
@@ -95,11 +98,11 @@ func (g *Group) IncrementHeight(fromRound uint32, memberUpdates []*MemberUpdate)
 	deletedMembers := make([]int, 0, len(g.members))
 	for _, m := range memberUpdates {
 		// Check if the update is to remove a member
-		if m.VotingPower == 0 {
-			member, index := g.getMemberByPubKey(m.PublicKey)
+		if m.Weight() == 0 {
+			member, index := g.getMemberByID(m.ID())
 			// check that the member exists
 			if member == nil {
-				return fmt.Errorf("tried to remove member (%X) that does not exist", m.PublicKey)
+				return fmt.Errorf("tried to remove member (%X) that does not exist", m.ID())
 			}
 			deletedMembers = append(deletedMembers, index)
 			continue
@@ -107,20 +110,17 @@ func (g *Group) IncrementHeight(fromRound uint32, memberUpdates []*MemberUpdate)
 	}
 
 	// update existing member voting powers and add new members
-	for _, m := range g.members {
-		if m.VotingPower == 0 {
+	for _, m := range memberUpdates {
+		if m.Weight() == 0 {
 			continue
 		}
-		member, _ := g.getMemberByPubKey(m.PublicKey)
+		member, _ := g.getMemberByID(m.ID())
 		if member == nil {
 			// here we are adding a new member, so we append it to the end.
 			// we will reorder the members by voting power later
-			g.members = append(g.members, &Member{
-				PublicKey:   m.PublicKey,
-				VotingPower: m.VotingPower,
-			})
+			g.members = append(g.members, m)
 		} else {
-			member.VotingPower = m.VotingPower
+			member = m
 		}
 	}
 
@@ -139,41 +139,53 @@ func (g *Group) IncrementHeight(fromRound uint32, memberUpdates []*MemberUpdate)
 		g.calculateTotalVotingPower()
 	}
 
-	// Incrementing the height is treated the same as if the round were incremented so we
-	// need to update the proposer priorities
-	for idx, member := range g.members {
-		member.ProposerPriority += int64(member.VotingPower)
-		if idx == g.roundWeightings[fromRound].proposerIndex {
-			member.ProposerPriority -= g.totalVotingPower
+	firstRoundWeighting := roundWeighting{
+		memberProposerPriorities: make([]int64, len(g.members)),
+	}
+	var highestProposerPriority int64 = 0
+	for i, member := range g.members {
+		// we set the proposer priority as members weight plus the proposer priority of the
+		// previous height if they were a member then.
+		firstRoundWeighting.memberProposerPriorities[i] = int64(member.Weight())
+		if priority, ok := pp[string(member.ID())]; ok {
+			firstRoundWeighting.memberProposerPriorities[i] += priority
+		}
+		// the last proposer is offset by the new total voting power
+		if bytes.Equal(member.ID(), lastProposer.ID()) {
+			firstRoundWeighting.memberProposerPriorities[i] -= int64(g.totalVotingPower)
+		}
+
+		// If the member has the highest proposer priority we mark it's index as the proposer
+		// for the first round of the new height
+		if firstRoundWeighting.memberProposerPriorities[i] > highestProposerPriority {
+			highestProposerPriority = firstRoundWeighting.memberProposerPriorities[i]
+			firstRoundWeighting.proposerIndex = i
 		}
 	}
+	g.roundWeightings = []roundWeighting{firstRoundWeighting}
 
-	// now lets create the first rounds proposer weightings and work out the proposer
-	g.setFirstRoundsWeightings()
 	return nil
 }
 
 // Export returns the underlying MemberSet
-func (g *Group) Export() *MemberSet {
-	return &MemberSet{
-		Members: g.members,
-	}
+func (g *WeightedRoundRobinGroup) Members() []Member {
+	return g.members
 }
 
 // TotalVotingPower returns the total voting power of the members
-func (g *Group) TotalVotingPower() int64 {
+func (g *WeightedRoundRobinGroup) TotalWeight() uint64 {
 	return g.totalVotingPower
 }
 
 // ------------------ PRIVATE FUNCTIONS ---------------------
 
-func (g *Group) addRound(round uint32) {
+func (g *WeightedRoundRobinGroup) addRound(round uint32) {
 	for i := len(g.roundWeightings); i <= int(round); i++ {
 		g.appendRound()
 	}
 }
 
-func (g *Group) appendRound() {
+func (g *WeightedRoundRobinGroup) appendRound() {
 	nextRoundWeighting := roundWeighting{
 		memberProposerPriorities: make([]int64, len(g.members)),
 	}
@@ -184,12 +196,12 @@ func (g *Group) appendRound() {
 	for idx, member := range g.members {
 		// incremenet the proposer priority by the voting power. The sum proposer priority would have increased
 		// by a total of the total voting power of the group
-		nextRoundWeighting.memberProposerPriorities[idx] = previousRound.memberProposerPriorities[idx] + int64(member.VotingPower)
+		nextRoundWeighting.memberProposerPriorities[idx] = previousRound.memberProposerPriorities[idx] + int64(member.Weight())
 		// whichever member was the proposer in the last round has their proposer priority
 		// subtracted by the total voting power. This offsets the total voting power which
 		// was added in the previous set. Meaning the net difference is 0
 		if idx == previousRound.proposerIndex {
-			nextRoundWeighting.memberProposerPriorities[idx] -= g.totalVotingPower
+			nextRoundWeighting.memberProposerPriorities[idx] -= int64(g.totalVotingPower)
 		}
 
 		if nextRoundWeighting.memberProposerPriorities[idx] > highestPriority {
@@ -200,78 +212,56 @@ func (g *Group) appendRound() {
 	g.roundWeightings = append(g.roundWeightings, nextRoundWeighting)
 }
 
-func (g *Group) getMemberByPubKey(pk []byte) (*Member, int) {
+func (g *WeightedRoundRobinGroup) getMemberByID(id []byte) (Member, int) {
 	for idx, m := range g.members {
-		if bytes.Equal(pk, m.PublicKey) {
+		if bytes.Equal(id, m.ID()) {
 			return m, idx
 		}
 	}
 	return nil, 0
 }
 
-func (g *Group) updateProposerPrioritiesToRound(round uint32) {
-	if round == 0 {
-		// nothing to change as the proposer priorities are the same
-		return
-	}
-	g.addRound(round)
-	for idx, member := range g.members {
-		member.ProposerPriority = g.roundWeightings[round].memberProposerPriorities[idx]
-	}
-}
-
-func (g *Group) sort() {
+func (g *WeightedRoundRobinGroup) sort() {
 	sort.Slice(g.members, func(i, j int) bool {
-		if g.members[i].VotingPower == g.members[j].VotingPower {
-			return bytes.Compare(g.members[i].PublicKey, g.members[j].PublicKey) < 0
+		if g.members[i].Weight() == g.members[j].Weight() {
+			return bytes.Compare(g.members[i].ID(), g.members[j].ID()) < 0
 		}
-		return g.members[i].VotingPower < g.members[j].VotingPower
+		return g.members[i].Weight() < g.members[j].Weight()
 	})
 }
 
-func (g *Group) setFirstRoundsWeightings() {
-	firstRoundWeighting := roundWeighting{
-		memberProposerPriorities: make([]int64, len(g.members)),
+func (g *WeightedRoundRobinGroup) getProposerPriorities(round uint32) map[string]int64 {
+	if round >= uint32(len(g.roundWeightings)) {
+		g.addRound(round)
 	}
-	var highestProposerPriority int64 = 0
-	for idx, m := range g.members {
-		firstRoundWeighting.memberProposerPriorities[idx] = m.ProposerPriority
-		if m.ProposerPriority > highestProposerPriority {
-			highestProposerPriority = m.ProposerPriority
-			firstRoundWeighting.proposerIndex = idx
-		}
+
+	proposerPriorities := make(map[string]int64)
+	for idx, priority := range g.roundWeightings[round].memberProposerPriorities {
+		proposerPriorities[string(g.members[idx].ID())] = priority
 	}
-	g.roundWeightings = []roundWeighting{firstRoundWeighting}
+	return proposerPriorities
 }
 
 // checkMemberUniqueness returns an error if there
-// is more that one member with the same public key.
-func (g *Group) checkMemberUniqueness() error {
+// is more that one member with the same id.
+func (g *WeightedRoundRobinGroup) checkMemberUniqueness() error {
 	for i, memberA := range g.members {
 		for j, memberB := range g.members {
 			if i == j {
 				continue
 			}
-			if bytes.Equal(memberA.PublicKey, memberB.PublicKey) {
-				return fmt.Errorf("members %d and %d have the same public key", i, j)
+			if bytes.Equal(memberA.ID(), memberB.ID()) {
+				return fmt.Errorf("members %d and %d have the same id", i, j)
 			}
 		}
 	}
 	return nil
 }
 
-func (g *Group) calculateTotalVotingPower() {
-	var totalVotingPower int64 = 0
+func (g *WeightedRoundRobinGroup) calculateTotalVotingPower() {
+	var totalVotingPower uint64 = 0
 	for _, m := range g.members {
-		totalVotingPower += int64(m.VotingPower)
+		totalVotingPower += uint64(m.Weight())
 	}
 	g.totalVotingPower = totalVotingPower
-}
-
-func (m *Member) Copy() *Member {
-	return &Member{
-		PublicKey:        m.PublicKey,
-		VotingPower:      m.VotingPower,
-		ProposerPriority: m.ProposerPriority,
-	}
 }

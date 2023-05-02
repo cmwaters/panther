@@ -8,6 +8,15 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+type Vote struct {
+	Height        uint64
+	Round         uint32
+	ProposalRound uint32
+	MemberIndex   uint32
+	Signature     []byte
+	Commit        bool
+}
+
 func (e *Engine) broadcastVote(
 	ctx context.Context,
 	height uint64,

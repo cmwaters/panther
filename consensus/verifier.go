@@ -5,30 +5,29 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/cmwaters/halo/pkg/group"
 	"google.golang.org/protobuf/proto"
 )
 
-type Verifier struct {
+type verifier struct {
 	namespace  string
-	group      *Group
-	verifyFunc VerifyFunc
+	group      group.Group
 	hasher     crypto.Hash
 }
 
-func NewVerifier(namespace string, group *Group, verifyFunc VerifyFunc, hasher crypto.Hash) *Verifier {
-	return &Verifier{
+func NewVerifier(namespace string, group group.Group, hasher crypto.Hash) *verifier {
+	return &verifier{
 		namespace:  namespace,
 		group:      group,
-		verifyFunc: verifyFunc,
 		hasher:     hasher,
 	}
 }
 
-func (v *Verifier) GetProposer(round uint32) *Member {
-	return v.group.GetProposer(round)
+func (v *verifier) GetProposer(round uint32) group.Member {
+	return v.group.Proposer(uint(round))
 }
 
-func (v *Verifier) VerifyProposal(proposal *Proposal, height uint64, round uint32) error {
+func (v *verifier) VerifyProposal(proposal *Proposal, height uint64, round uint32) error {
 	if len(proposal.Signature) == 0 {
 		return errors.New("proposal signature missing")
 	}
@@ -41,8 +40,8 @@ func (v *Verifier) VerifyProposal(proposal *Proposal, height uint64, round uint3
 		return fmt.Errorf("proposal is from a round in the future (exp: %d, got: %d)", round, proposal.Round)
 	}
 
-	proposer := v.group.GetProposer(proposal.Round)
-	if !v.verifyFunc(proposer.PublicKey, v.ProposalMessageBytes(proposal), proposal.Signature) {
+	proposer := v.group.Proposer(uint(proposal.Round))
+	if proposer.Verify(v.ProposalMessageBytes(proposal), proposal.Signature) {
 		// This could be caused by one of a few things:
 		// - The proposal comes from a member who is not currently the proposer
 		// - The proposer has incorrectly signed a different set of data
@@ -53,12 +52,12 @@ func (v *Verifier) VerifyProposal(proposal *Proposal, height uint64, round uint3
 	return nil
 }
 
-func (v *Verifier) Hash(data []byte) []byte {
+func (v *verifier) Hash(data []byte) []byte {
 	hash := v.hasher.New()
 	return hash.Sum(data)
 }
 
-func (v *Verifier) ProposalMessageBytes(proposal *Proposal) []byte {
+func (v *verifier) ProposalMessageBytes(proposal *Proposal) []byte {
 	sigMsg := &SignatureMessage{
 		Type:       SignatureMessage_PROPOSE,
 		Height:     int64(proposal.Height),
@@ -73,7 +72,7 @@ func (v *Verifier) ProposalMessageBytes(proposal *Proposal) []byte {
 	return bz
 }
 
-func (v *Verifier) VerifyVote(vote *Vote, height uint64, dataDigest []byte) error {
+func (v *verifier) VerifyVote(vote *Vote, height uint64, dataDigest []byte) error {
 	if err := vote.ValidateForm(); err != nil {
 		return err
 	}
@@ -94,7 +93,7 @@ func (v *Verifier) VerifyVote(vote *Vote, height uint64, dataDigest []byte) erro
 	return nil
 }
 
-func (v *Verifier) VoteMessageBytes(vote *Vote, dataDigest []byte) []byte {
+func (v *verifier) VoteMessageBytes(vote *Vote, dataDigest []byte) []byte {
 	sigMsg := &SignatureMessage{
 		Type:       SignatureMessage_Type(vote.Type),
 		Height:     int64(vote.Height),

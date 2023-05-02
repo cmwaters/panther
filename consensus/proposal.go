@@ -5,20 +5,25 @@ import (
 	"fmt"
 )
 
+type Proposal struct {
+	Data []byte
+	Height uint64
+	Round uint32
+	Signature []byte
+}
+
 func (e *Engine) propose(
 	ctx context.Context,
 	height uint64,
 	round, proposalRound uint32,
 ) error {
 	// request data from the application to be proposed to the network
-	proposeDataResp, err := e.app.ProposeData(ctx, &ProposeDataRequest{
-		Height: height,
-	})
+	proposedData, err := e.app.Read(ctx, height)
 	if err != nil {
 		return fmt.Errorf("requesting application for proposal data: %w", err)
 	}
 
-	return e.broadcastProposal(ctx, height, round, proposalRound, proposeDataResp.Data)
+	return e.broadcastProposal(ctx, height, round, proposalRound, proposedData)
 }
 
 func (e *Engine) broadcastProposal(
