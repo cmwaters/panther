@@ -1,4 +1,4 @@
-package signer
+package sign
 
 import (
 	"context"
@@ -14,7 +14,12 @@ import (
 // Make sure the verify function corresponds to the signature scheme used by
 // the signer
 type Signer interface {
-	Sign(ctx context.Context, watermark Watermark, msg []byte) ([]byte, error)
+	// ID should return a unique identifier for the signer that can be used
+	// to identify the member within the group. This must always return the same
+	// value
+	ID() []byte
+	
+	Sign(ctx context.Context, level Watermark, msg []byte) ([]byte, error)
 }
 
 type ErrAlreadySigned []uint64

@@ -1,9 +1,11 @@
 package group
 
 type Group interface {
-	Proposer(uint) Member
-	Member(uint) Member
+	Proposer(round uint) Member
+	Member(index uint) Member
+	GetMemberByID(id []byte) (Member, uint)
 	TotalWeight() uint64
+	Size() int
 }
 
 type Member interface {

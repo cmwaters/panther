@@ -1,4 +1,4 @@
-package signer
+package sign
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 type TestSigner struct {
 	privateKey ed25519.PrivateKey
 	publicKey  ed25519.PublicKey
-	watermark  Watermark
+	level  Watermark
 }
 
 func NewTestSigner() *TestSigner {
@@ -24,20 +24,24 @@ func NewTestSigner() *TestSigner {
 	}
 }
 
-func (s *TestSigner) Sign(ctx context.Context, watermark Watermark, msg []byte) ([]byte, error) {
-	if !watermark.Greater(s.watermark) {
-		return nil, ErrAlreadySigned(s.watermark)
+func (s *TestSigner) Sign(ctx context.Context, level Watermark, msg []byte) ([]byte, error) {
+	if !level.Greater(s.level) {
+		return nil, ErrAlreadySigned(s.level)
 	}
-	s.watermark = watermark
+	s.level = level
 	return ed25519.Sign(s.privateKey, msg), nil
+}
+
+func (s *TestSigner) ID() []byte {
+	return s.publicKey
 }
 
 func (s *TestSigner) PublicKey() ed25519.PublicKey {
 	return s.publicKey
 }
 
-func (s *TestSigner) Watermark() Watermark {
-	return s.watermark
+func (s *TestSigner) Level() Watermark {
+	return s.level
 }
 
 func (s *TestSigner) ToMember(weight uint32) group.Member {

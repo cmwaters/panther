@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 
 	"github.com/cmwaters/halo/pkg/app"
-	"github.com/cmwaters/halo/pkg/signer"
-	"github.com/creachadair/taskgroup"
+	"github.com/cmwaters/halo/pkg/group"
+	"github.com/cmwaters/halo/pkg/sign"
 	"github.com/rs/zerolog"
 )
 
@@ -18,24 +18,23 @@ import (
 // should be on the same version
 const Version = 1
 
+var _ Service = &Engine{}
+var _ Consensus = &Engine{}
+
 // Engine is the core struct that performs byzantine fault tolerant state
-// machine replication using the Tendermint protocol.
+// machine replication using the Lock and Commit protocol.
 //
 // In order to function it depends on a networking implementation that completes
-// the Sender and Receiver interfaces, a state machine for building, verifying,
-// executing and persisting data and an optional signer which is necessary as a writer
+// the Gossip interface, a state machine for building, verifying, executing and
+// persisting data and an optional signer which is necessary as a writer
 // in the network to sign votes and proposals using a secured private key
 //
-// Engine can either be bundled in the same process (in the case of a state machine,
-// networking layer and signer written in golang) or can be in a separate process
-// (in which gRPC is used to communicate).
-//
 // The engine runs only in memory and is thus not responsible for persistence and crash
-// recovery. Each time the application starts it uses the handshake with the application
-// to set or restore the height and other parameters the engine needs to continue
+// recovery. Each time start is called, a height and state machine is provided
 type Engine struct {
-	// The application the consensus engine is communicating with to provide SMR
-	app app.Application
+	// namespace represents the unique id of the application. It is paired with
+	// height and round to signal uniqueness of proposals and votes
+	namespace []byte
 
 	// gossip represents a simple networking abstraction for broadcasting messages
 	// that should eventually propagate to all non-faulty nodes in the network as
@@ -45,54 +44,33 @@ type Engine struct {
 	// signer is only used if the node is a validator or writer in the network
 	// as opposed to a reader or full node, in which case this can be nil.
 	// The signer is responsible for signing votes and proposals.
-	signer signer.Signer
-	// we save our public key so we can recognise when we need to propose.
-	ourPubkey []byte
+	signer sign.Signer
+
+	// parameters entails the set of consensus specfic parameters that are used
+	// to reach consensus
+	parameters Parameters
+
+	// hasher defines how proposal data is hashed for signing
+	hasher crypto.Hash
 
 	// status tracks if the engine is running or not.
-	status uint32
-
-	// Executor tracks the main consensus state: height, round and the
-	// logic for deciding when to vote, what to vote and handling the
-	// finalization of a proposal
-	executor *executor
-
-	// Verifier verifies proposals and votes
-	verifier *verifier
-
-	// Tally keeps track of all votes and proposals.
-	tally *tally
+	status atomic.Bool
 
 	// The following are used for managing the lifecycle of the engine
-	closer chan struct{}
+	cancel context.CancelFunc
 	done   chan struct{}
 
 	logger zerolog.Logger
 }
 
-// Option is a set of configurable parameters. If left empty, defaults
-// will be used
-type Option func(e *Engine)
-
-// WithHashFunc sets the hash function for hashing proposal data
-func WithCustomHashFunc(f crypto.Hash) Option {
-	return func(e *Engine) {
-		e.verifier.hasher = f
-	}
-}
-
-const DefaultHashFunc = crypto.SHA256
-
 // New creates a new consensus engine
-func New(app app.Application, gossip Gossip, signer signer.Signer, opts ...Option) *Engine {
+func New(gossip Gossip, signer sign.Signer, parameters Parameters, opts ...Option) *Engine {
 	e := &Engine{
-		app:    app,
-		gossip: gossip,
-		signer: signer,
-		verifier: &verifier{
-			hasher: DefaultHashFunc,
-		},
-		logger: zerolog.New(os.Stdout),
+		gossip:     gossip,
+		signer:     signer,
+		parameters: parameters,
+		hasher:     DefaultHashFunc,
+		logger:     zerolog.New(os.Stdout),
 	}
 
 	for _, opt := range opts {
@@ -104,93 +82,123 @@ func New(app app.Application, gossip Gossip, signer signer.Signer, opts ...Optio
 
 // Operational phases
 const (
-	Off = iota
-	StartingUp
-	On
-	ShuttingDown
+	Off = false
+	On  = true
 )
 
-// retry handling of grpc connections
-const (
-	maxRetryAttempts         = 7
-	exponentialBackoffFactor = 40 // 40ms
-)
-
-func (e *Engine) Run(ctx context.Context) error {
-	if err := e.startUp(ctx); err != nil {
-		return err
+// Start implements the Service interface and starts the consensus engine
+func (e *Engine) Start(ctx context.Context, height uint64, app app.StateMachine) error {
+	if !e.status.CompareAndSwap(Off, On) {
+		return errors.New("engine already running")
 	}
-	defer e.shutDown()
-	return e.run(ctx)
+	defer e.status.CompareAndSwap(On, Off)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	e.cancel = cancel
+	e.done = make(chan struct{})
+	defer close(e.done)
+	for {
+		group, err := app.Initialize(ctx, height)
+		if err != nil {
+			return err
+		}
+		data, err := e.Commit(ctx, height, group, app.Propose, app.VerifyProposal)
+		if err != nil {
+			return err
+		}
+		if err := app.Finalize(ctx, height, data); err != nil {
+			return err
+		}
+		height++
+	}
 }
 
-func (e *Engine) IsRunning() bool {
-	return atomic.LoadUint32(&e.status) == On
-}
+// Commit implements the Consensus interface. It executes a single instance of consensus between
+// a group of participants. It takes in two hooks, one for proposing data and another for verifying
+// the data. It returns the data that was agreed upon by the group under the lock and commit protocol
+func (e *Engine) Commit(
+	ctx context.Context,
+	height uint64,
+	group group.Group,
+	proposeFn app.Propose,
+	verifyProposalFn app.VerifyProposal,
+) ([]byte, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-func (e *Engine) Start(ctx context.Context, height uint64) error {
-	if err := e.startUp(ctx); err != nil {
-		return err
+	// for each height, the process splits up the task through three components:
+	// - Verifier: responsible for verifying the validity of proposals and votes
+	// - Store: responsible for storing proposals and votes
+	// - Tally: responsible for tallying votes and proposals and for voting and
+	//          proposing according to the rules of the consensus protocol
+	verifier := NewVerifier(e.namespace, height, group, e.hasher, verifyProposalFn)
+	store := NewStore()
+	voteFn, selfWeight := e.voteFn(height, group, store)
+	tally := NewTally(
+		voteFn,
+		e.proposeFn(height, group, store, proposeFn),
+		selfWeight,
+		group.TotalWeight(),
+		e.parameters.ProposalTimeout,
+		e.parameters.LockDelay,
+	)
+	
+	// The concurrency model of the system is relatively simple. There are three
+	// main go routines. The first two: receiveProposals and receiveVotes spawn 
+	// new threads for handling each vote and proposal thus handling, verfication 
+	// and storage are all highly parallelized. The last, the tally is run in a 
+	// separate thread. It uses a single channel to serailize all processed votes 
+	// and proposals and follow the logic of the cosensus protocol. When tally.Run() 
+	// finalizes a value, the round of the proposal is returned through the `Done`
+	// channel.
+	errCh := make(chan error, 3)
+	go func() {
+		errCh <- tally.Run(ctx)
+	}()
+	go func() {
+		errCh <- e.receiveProposals(ctx, tally, verifier, store)
+	}()
+	go func() {
+		errCh <- e.receiveVotes(ctx, tally, verifier, store)
+	}()
+
+	// There can be at most three errors for each of the goroutines.
+	// If any of them return an error, the `Commit` method errors,
+	// the remaining go routines will exit as the context is cancelled.
+	for i := 0; i < 3; i++ {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				return nil, err
+			}
+		
+		case proposalRound := <-tally.Done():
+			_, proposal := store.GetProposal(proposalRound)
+			return proposal.Data, nil
+		}
 	}
-	go e.run(context.Background())
-	return nil
+	return nil, nil
 }
 
 func (e *Engine) Stop() error {
-	return e.shutDown()
-}
-
-func (e *Engine) startUp(ctx context.Context) error {
-	if !atomic.CompareAndSwapUint32(&e.status, Off, StartingUp) {
-		return errors.New("engine already running")
+	if !e.status.CompareAndSwap(On, Off) {
+		return errors.New("engine is not running")
 	}
-
-	atomic.CompareAndSwapUint32(&e.status, StartingUp, On)
+	e.cancel()
+	<-e.Wait()
 	return nil
 }
 
-func (e *Engine) run(ctx context.Context) error {
-	if atomic.LoadUint32(&e.status) != On {
-		return errors.New("engine is not running")
-	}
-	defer close(e.done)
-	ctx, cancel := context.WithCancel(ctx)
-	tg := taskgroup.New(func(err error) error {
-		// close all other go routines upon the first failure
-		cancel()
-		return err
-	})
-
-	tg.Go(func() error {
-		return e.receiveProposal(ctx)
-	})
-	tg.Go(func() error {
-		return e.receiveVotes(ctx)
-	})
-	tg.Go(func() error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-e.closer:
-			return ErrApplicationShutdown
-		}
-	})
-
-	return tg.Wait()
+func (e *Engine) StopAtHeight(height uint64) error {
+	panic("not implemented")
 }
 
-func (e *Engine) shutDown() error {
-	if !atomic.CompareAndSwapUint32(&e.status, On, ShuttingDown) {
-		return errors.New("engine is not running")
-	}
+func (e *Engine) IsRunning() bool {
+	return e.status.Load()
+}
 
-	close(e.closer)
-
-	<-e.done
-
-	atomic.StoreUint32(&e.status, Off)
-
-	return nil
+func (e *Engine) Wait() <-chan struct{} {
+	return e.done
 }
 
 var ErrApplicationShutdown = errors.New("application requested termination")

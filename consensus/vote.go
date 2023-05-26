@@ -5,8 +5,62 @@ import (
 	"errors"
 	"fmt"
 
-	"google.golang.org/protobuf/proto"
+	"github.com/cmwaters/halo/pkg/group"
+	"github.com/cmwaters/halo/pkg/sign"
 )
+
+// voteFn returns a function that the tally will call whenever a state transition results in
+// issuing a vote. Concretely, this will be called upon receiving a proposal, a timeout or a
+// set of votes for a proposal
+func (e *Engine) voteFn(
+	height uint64,
+	group group.Group,
+	store *Store,
+) (VoteFn, uint32) {
+	if e.signer == nil {
+		// cannot vote without a signer
+		return nil, 0
+	}
+
+	id := e.signer.ID()
+	member, memberIdx := group.GetMemberByID(id)
+	// cannot vote if the node is not a member within the group
+	if member == nil {
+		return nil, 0
+	}
+
+	return func(ctx context.Context, round uint32, proposalRound uint32, commit bool) error {
+		vote := NewVote(height, round, proposalRound, uint32(memberIdx), commit)
+
+		// a vote signs over the hash of the bytes that the data proposes. This way a process can only
+		// vote (and verify a vote) if they have received the proposal
+		dataDigest, proposal := store.GetProposal(proposalRound)
+		if proposal == nil {
+			return fmt.Errorf("proposal %d/%d for vote not found", height, proposalRound)
+		}
+
+		signBytes := vote.SignBytes(dataDigest, e.namespace)
+		signature, err := e.signer.Sign(ctx, vote.Level(), signBytes)
+		if err != nil {
+			return fmt.Errorf("signing vote: %w", err)
+		}
+		vote.Signature = signature
+
+		// sanity check that this function constructs a correctly formed vote
+		if err := vote.ValidateForm(); err != nil {
+			panic(err)
+		}
+
+		if err := e.gossip.BroadcastVote(ctx, vote); err != nil {
+			return fmt.Errorf("broadcasting vote: %w", err)
+		}
+
+		// add the vote to the store
+		_ = store.AddVote(vote)
+
+		return nil
+	}, member.Weight()
+}
 
 type Vote struct {
 	Height        uint64
@@ -17,70 +71,43 @@ type Vote struct {
 	Commit        bool
 }
 
-func (e *Engine) broadcastVote(
-	ctx context.Context,
-	height uint64,
-	round uint32,
-	proposalRound uint32,
-	dataDigest []byte,
-	voteType Vote_Type,
-) error {
-	if e.signer == nil {
-		return nil
-	}
-
-	sigMsgPB := &SignatureMessage{
-		Type:       SignatureMessage_Type(voteType),
-		Height:     int64(height),
-		Round:      int32(round),
-		Namespace:  e.executor.namespace,
-		DataDigest: dataDigest,
-	}
-
-	sigMsg, err := proto.Marshal(sigMsgPB)
-	if err != nil {
-		panic(err)
-	}
-
-	signerResponse, err := e.signer.Sign(ctx, &SignRequest{
-		Type:     SignRequest_Type(voteType),
-		Height:   height,
-		Round:    round,
-		Proposal: proposalRound,
-		Message:  sigMsg,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to sign vote: %w", err)
-	}
-
-	vote := &Vote{
-		Type:          voteType,
+func NewVote(height uint64, round, proposalRound, memberIndex uint32, commit bool) *Vote {
+	return &Vote{
 		Height:        height,
 		Round:         round,
-		ProposalRound: signerResponse.Proposal,
-		Signature:     signerResponse.Signature,
+		ProposalRound: proposalRound,
+		MemberIndex:   memberIndex,
+		Commit:        commit,
 	}
-
-	_, err = e.gossip.BroadcastVote(ctx, &BroadcastVoteRequest{Vote: vote})
-	if err != nil {
-		return fmt.Errorf("failed to broadcast vote %w", err)
-	}
-
-	_, hasMajority := e.tally.AddVote(vote)
-	if hasMajority {
-
-	}
-
-	return nil
 }
 
-func (v *Vote) ValidateForm() error {
+func (v Vote) SignBytes(digest, namespace []byte) []byte {
+	voteType := LOCK_TYPE
+	if v.Commit {
+		voteType = COMMIT_TYPE
+	}
+	return EncodeMsgToSign(uint8(voteType), v.Height, v.Round, digest, namespace)
+}
+
+func (v Vote) Level() sign.Watermark {
+	step := 1
+	if v.Commit {
+		step = 2
+	}
+	return sign.Watermark{v.Height, uint64(v.Round), uint64(step)}
+}
+
+func (v Vote) ValidateForm() error {
 	if v.ProposalRound > v.Round {
 		return fmt.Errorf("vote in round %d is for a proposal in a future round (%d)", v.Round, v.ProposalRound)
 	}
 
-	if v.Type != Vote_SIGNAL || v.Type != Vote_COMMIT {
-		return errors.New("vote must be of type signal or commit")
+	if v.Height == 0 {
+		return errors.New("vote height is zero")
+	}
+
+	if v.Round == 0 {
+		return errors.New("vote round is zero")
 	}
 
 	if len(v.Signature) == 0 {
@@ -90,10 +117,17 @@ func (v *Vote) ValidateForm() error {
 	return nil
 }
 
-func (v *Vote) IsCommit() bool {
-	return v.Type == Vote_COMMIT
+func (v Vote) IsCommit() bool {
+	return v.Commit
 }
 
-func (v *Vote) IsSignal() bool {
-	return v.Type == Vote_SIGNAL
+func (v *Vote) String() string {
+	if v == nil {
+		return "nil"
+	}
+
+	if v.Commit {
+		return fmt.Sprintf("Commit{%d/%d/%d by %d $ %X}", v.Height, v.Round, v.ProposalRound, v.MemberIndex, v.Signature)
+	}
+	return fmt.Sprintf("Lock{%d/%d/%d by %d $ %X}", v.Height, v.Round, v.ProposalRound, v.MemberIndex, v.Signature)
 }

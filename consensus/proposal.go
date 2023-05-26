@@ -1,87 +1,123 @@
 package consensus
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+
+	"github.com/cmwaters/halo/pkg/app"
+	"github.com/cmwaters/halo/pkg/group"
+	"github.com/cmwaters/halo/pkg/sign"
 )
 
+// proposeFn generates a function that the tally will call whenever it reaches a stage in the
+// protocol where it needs to propose. Concretely, this will be called whenever the Tally enters
+// a new round. Only if the node is the proposer for that round will it actually formulate a
+// proposal and gossip it to the network.
+func (e *Engine) proposeFn(
+	height uint64,
+	group group.Group,
+	store *Store,
+	propose app.Propose,
+) ProposeFn {
+	if e.signer == nil {
+		// cannot propose without a signer
+		return nil
+	}
+	id := e.signer.ID()
+
+	return func(ctx context.Context, round uint32) (bool, error) {
+		if !bytes.Equal(group.Proposer(uint(round)).ID(), id) {
+			// this process is not the proposer for this round
+			return false, nil
+		}
+
+		// call the application to compose the data within the proposal
+		data, err := propose(ctx, height)
+		if err != nil {
+			return false, fmt.Errorf("requesting application for proposal data: %w", err)
+		}
+		dataDigest := e.hasher.New().Sum(data)
+
+		proposal := NewProposal(height, round, data)
+		signBytes := proposal.SignBytes(dataDigest, e.namespace)
+		signature, err := e.signer.Sign(ctx, proposal.Level(), signBytes)
+		if err != nil {
+			return false, fmt.Errorf("signing proposal: %w", err)
+		}
+		proposal.Signature = signature
+
+		// sanity check that this function constructs a correctly formed proposal
+		if err := proposal.ValidateForm(); err != nil {
+			panic(err)
+		}
+
+		if err := e.gossip.BroadcastProposal(ctx, proposal); err != nil {
+			return false, fmt.Errorf("broadcasting proposal: %w", err)
+		}
+
+		// add the proposal to the store
+		store.AddProposal(proposal)
+
+		return true, nil
+	}
+}
+
 type Proposal struct {
-	Data []byte
-	Height uint64
-	Round uint32
+	Data      []byte
+	Height    uint64
+	Round     uint32
 	Signature []byte
 }
 
-func (e *Engine) propose(
-	ctx context.Context,
-	height uint64,
-	round, proposalRound uint32,
-) error {
-	// request data from the application to be proposed to the network
-	proposedData, err := e.app.Read(ctx, height)
-	if err != nil {
-		return fmt.Errorf("requesting application for proposal data: %w", err)
-	}
-
-	return e.broadcastProposal(ctx, height, round, proposalRound, proposedData)
-}
-
-func (e *Engine) broadcastProposal(
-	ctx context.Context,
-	height uint64,
-	round, proposalRound uint32,
-	data []byte,
-) error {
-	if e.signer == nil {
-		return nil
-	}
-
-	dataDigest := e.verifier.Hash(data)
-	proposal := &Proposal{
+func NewProposal(height uint64, round uint32, data []byte) *Proposal {
+	return &Proposal{
+		Data:   data,
 		Height: height,
 		Round:  round,
-		Data:   data,
+	}
+}
+
+func (p Proposal) SignBytes(dataDigest, namespace []byte) []byte {
+	return EncodeMsgToSign(uint8(PROPOSAL_TYPE), p.Height, p.Round, dataDigest, namespace)
+}
+
+func (p Proposal) Level() sign.Watermark {
+	return sign.Watermark{p.Height, uint64(p.Round), uint64(0)}
+}
+
+func (p Proposal) ValidateForm() error {
+	if len(p.Signature) == 0 {
+		return errors.New("proposal does not contain any signature")
 	}
 
-	sigMsg := e.verifier.ProposalMessageBytes(proposal)
-
-	signerResp, err := e.signer.Sign(ctx, &SignRequest{
-		Type:     SignRequest_PROPOSE,
-		Height:   height,
-		Round:    round,
-		Proposal: proposalRound,
-		Message:  sigMsg,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to sign proposal: %w", err)
-	}
-	if signerResp.Abort {
-		// The signer is indicating that it has already signed for
-		// a different proposal at this height and round. Either this
-		// was signed by the node but it crashed or signed by another
-		// replica instance. In both cases their is a high chance that
-		// it is being broadcasted through the network. If it has failed
-		// to propagate then it is lost and another node will eventually
-		// broadcast a new proposal.
-		return nil
+	if p.Height == 0 {
+		return errors.New("proposal height is zero")
 	}
 
-	proposal.Signature = signerResp.Signature
-
-	_, err = e.gossip.BroadcastProposal(ctx, &BroadcastProposalRequest{
-		Proposal: proposal,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to broadcast proposal: %w", err)
+	if p.Round == 0 {
+		return errors.New("proposal round is zero")
 	}
 
-	// Add our own proposal immediately
-	e.tally.AddProposal(proposal)
-
-	if round == 0 {
-		// If this is the first round we can also immediately vote
-		return e.broadcastVote(ctx, height, round, round, dataDigest, Vote_COMMIT)
+	if len(p.Data) == 0 {
+		return errors.New("proposal does not contain any data")
 	}
 
 	return nil
+}
+
+func (p *Proposal) String() string {
+	if p == nil {
+		return "nil"
+	}
+
+	return fmt.Sprintf("Proposal{%d/%d for %X $ %X}", p.Height, p.Round, truncate(p.Data, 32), p.Signature)
+}
+
+func truncate(data []byte, max int) []byte {
+	if len(data) > max {
+		return data[:max]
+	}
+	return data
 }

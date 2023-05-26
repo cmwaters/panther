@@ -1,13 +1,37 @@
 package consensus
 
-import "context"
+import (
+	"context"
+
+	"github.com/cmwaters/halo/pkg/app"
+	"github.com/cmwaters/halo/pkg/group"
+)
 
 type (
+	// Service embodies a process that is perpetually running the underlying consensus
+	// protocol. Each iteration is known as a height. The service starts by being specified
+	// a height and a state machine that it will perform replication on and continues until 
+	// an error is encountered, or it is stopped.
 	Service interface {
-		Start(ctx context.Context, height uint64) error
+		Start(context.Context, uint64, app.StateMachine) error
 		Stop() error
-		StopAtHeight(height uint64) error
+		StopAtHeight(uint64) error
 		Wait() <-chan struct{}
+		IsRunning() bool
+	}
+
+	// Consensus is an interface that allows the caller to `Commit` a value, either
+	// proposed from it's own process or by a participant in the "Group". Underlying
+	// a Consensus instance is a networking layer, responsible for broadcasting proposals
+	// and votes to one another.
+	Consensus interface {
+		Commit(
+			context.Context,
+			uint64,
+			group.Group,
+			app.Propose,
+			app.VerifyProposal,
+		) ([]byte, error)
 	}
 
 	// Gossip is an interface which allows the consensus engine to both broadcast
@@ -18,15 +42,21 @@ type (
 	Gossip interface {
 		Receiver
 		Sender
+		Reporter
 	}
 
 	Receiver interface {
-		ReceiveProposal(context.Context) (*Proposal, error)
-		ReceiveVote(context.Context) (*Vote, error)
+		ReceiveProposal(context.Context, uint64) (*Proposal, error)
+		ReceiveVote(context.Context, uint64) (*Vote, error)
 	}
 
 	Sender interface {
 		BroadcastProposal(context.Context, *Proposal) error
 		BroadcastVote(context.Context, *Vote) error
+	}
+
+	Reporter interface {
+		ReportProposal(context.Context, *Proposal) error
+		ReportVote(context.Context, *Vote) error
 	}
 )

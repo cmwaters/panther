@@ -1,47 +1,65 @@
 package consensus
 
 import (
+	"context"
 	"crypto"
 	"errors"
 	"fmt"
 
+	"github.com/cmwaters/halo/pkg/app"
 	"github.com/cmwaters/halo/pkg/group"
-	"google.golang.org/protobuf/proto"
 )
 
-type verifier struct {
-	namespace  string
-	group      group.Group
-	hasher     crypto.Hash
+type Verifier struct {
+	height           uint64
+	namespace        []byte
+	group            group.Group
+	hasher           crypto.Hash
+	verifyProposalFn app.VerifyProposal
 }
 
-func NewVerifier(namespace string, group group.Group, hasher crypto.Hash) *verifier {
-	return &verifier{
-		namespace:  namespace,
-		group:      group,
-		hasher:     hasher,
+func NewVerifier(namespace []byte, height uint64, group group.Group, hasher crypto.Hash, verifyProposalFn app.VerifyProposal) *Verifier {
+	return &Verifier{
+		height:           height,
+		namespace:        namespace,
+		group:            group,
+		hasher:           hasher,
+		verifyProposalFn: verifyProposalFn,
 	}
 }
 
-func (v *verifier) GetProposer(round uint32) group.Member {
+func (v *Verifier) Update(group group.Group, height uint64) {
+	v.group = group
+	v.height = height
+}
+
+func (v *Verifier) GetProposer(round uint32) group.Member {
 	return v.group.Proposer(uint(round))
 }
 
-func (v *verifier) VerifyProposal(proposal *Proposal, height uint64, round uint32) error {
+func (v *Verifier) GetMember(index uint32) group.Member {
+	return v.group.Member(uint(index))
+}
+
+func (v *Verifier) VerifyProposal(ctx context.Context, proposal *Proposal) error {
 	if len(proposal.Signature) == 0 {
 		return errors.New("proposal signature missing")
 	}
 
-	if proposal.Height != proposal.Height {
-		return fmt.Errorf("proposal is from a different height (exp: %d, got: %d)", height, proposal.Height)
+	if v.height != proposal.Height {
+		return fmt.Errorf("proposal is from a different height (exp: %d, got: %d)", v.height, proposal.Height)
 	}
 
-	if proposal.Round > round {
-		return fmt.Errorf("proposal is from a round in the future (exp: %d, got: %d)", round, proposal.Round)
-	}
+	errCh := make(chan error, 1)
+	// start a separate goroutine to verify the proposal. This can run in parallel with the
+	// signature verification
+	go func() {
+		errCh <- v.verifyProposalFn(ctx, proposal.Height, proposal.Data)
+	}()
 
 	proposer := v.group.Proposer(uint(proposal.Round))
-	if proposer.Verify(v.ProposalMessageBytes(proposal), proposal.Signature) {
+	dataDigest := v.Hash(proposal.Data)
+	if proposer.Verify(proposal.SignBytes(dataDigest, v.namespace), proposal.Signature) {
 		// This could be caused by one of a few things:
 		// - The proposal comes from a member who is not currently the proposer
 		// - The proposer has incorrectly signed a different set of data
@@ -49,68 +67,40 @@ func (v *verifier) VerifyProposal(proposal *Proposal, height uint64, round uint3
 		return errors.New("invalid proposal signature")
 	}
 
-	return nil
+	// block until the application has verified the proposal
+	return <-errCh
 }
 
-func (v *verifier) Hash(data []byte) []byte {
+func (v *Verifier) Hash(data []byte) []byte {
 	hash := v.hasher.New()
 	return hash.Sum(data)
 }
 
-func (v *verifier) ProposalMessageBytes(proposal *Proposal) []byte {
-	sigMsg := &SignatureMessage{
-		Type:       SignatureMessage_PROPOSE,
-		Height:     int64(proposal.Height),
-		Round:      int32(proposal.Round),
-		Namespace:  v.namespace,
-		DataDigest: v.Hash(proposal.Data),
-	}
-	bz, err := proto.Marshal(sigMsg)
-	if err != nil {
-		panic(err)
-	}
-	return bz
-}
-
-func (v *verifier) VerifyVote(vote *Vote, height uint64, dataDigest []byte) error {
+func (v *Verifier) VerifyVote(vote *Vote, dataDigest []byte) error {
 	if err := vote.ValidateForm(); err != nil {
 		return err
 	}
 
-	if vote.Height != height {
-		return fmt.Errorf("vote is from a different height (exp: %d, got: %d)", height, vote.Height)
+	if vote.Height != v.height {
+		return fmt.Errorf("vote is from a different height (exp: %d, got: %d)", v.height, vote.Height)
 	}
 
-	if int(vote.MemberIndex) >= len(v.group.members) {
+	if int(vote.MemberIndex) >= v.group.Size() {
 		return fmt.Errorf("invalid member index exceeds total members (%d)", vote.MemberIndex)
 	}
 
-	member := v.group.GetMember(vote.MemberIndex)
-	if !v.verifyFunc(member.PublicKey, v.VoteMessageBytes(vote, dataDigest), vote.Signature) {
+	member := v.group.Member(uint(vote.MemberIndex))
+	if !member.Verify(vote.SignBytes(dataDigest, v.namespace), vote.Signature) {
 		return errors.New("invalid vote signature")
 	}
 
 	return nil
 }
 
-func (v *verifier) VoteMessageBytes(vote *Vote, dataDigest []byte) []byte {
-	sigMsg := &SignatureMessage{
-		Type:       SignatureMessage_Type(vote.Type),
-		Height:     int64(vote.Height),
-		Round:      int32(vote.Round),
-		Namespace:  v.namespace,
-		DataDigest: dataDigest,
-	}
-	bz, err := proto.Marshal(sigMsg)
-	if err != nil {
-		panic(err)
-	}
-	return bz
+func (v *Verifier) Height() uint64 {
+	return v.height
 }
 
-func (p *Parameters) Validate() error {
-	if p.RoundTimeout.AsDuration() == 0 {
-		return errors.New("Round Timeout must be greater than zero")
-	}
-	return nil
+func (v *Verifier) Namespace() []byte {
+	return v.namespace
 }

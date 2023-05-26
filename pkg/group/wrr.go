@@ -13,6 +13,7 @@ var _ Group = &WeightedRoundRobinGroup{}
 // the weighted round robin leader election algorithm.
 type WeightedRoundRobinGroup struct {
 	members          []Member
+	memberByID       map[string]uint
 	roundWeightings  []roundWeighting
 	totalVotingPower uint64
 }
@@ -28,11 +29,15 @@ func NewWeighterRoundRobinGroup(memberSet []Member) (*WeightedRoundRobinGroup, e
 		return nil, errors.New("memberset must have at least one member")
 	}
 
-	var totalVotingPower uint64 = 0
+	var (
+		totalVotingPower        uint64 = 0
+		highestProposerPriority uint32 = 0
+		memberMap                      = make(map[string]uint)
+	)
 	firstRoundWeighting := roundWeighting{
 		memberProposerPriorities: make([]int64, len(memberSet)),
 	}
-	var highestProposerPriority uint32 = 0
+
 	for idx, m := range memberSet {
 		if m.Weight() == 0 {
 			return nil, fmt.Errorf("member %d has 0 voting power", idx)
@@ -47,10 +52,12 @@ func NewWeighterRoundRobinGroup(memberSet []Member) (*WeightedRoundRobinGroup, e
 
 	g := &WeightedRoundRobinGroup{
 		members:          memberSet,
+		memberByID:       memberMap,
 		roundWeightings:  []roundWeighting{firstRoundWeighting},
 		totalVotingPower: totalVotingPower,
 	}
 	g.sort()
+	g.updateMemberMap()
 	if err := g.checkMemberUniqueness(); err != nil {
 		return nil, err
 	}
@@ -76,6 +83,20 @@ func (g *WeightedRoundRobinGroup) Member(index uint) Member {
 	}
 
 	return g.members[index]
+}
+
+// Size implements the group interface, returning the amount of members in the group
+func (g *WeightedRoundRobinGroup) Size() int {
+	return len(g.members)
+}
+
+// GetMemberByID implements the group interface, looking up and returning member by its ID
+func (g *WeightedRoundRobinGroup) GetMemberByID(id []byte) (Member, uint) {
+	idx, ok := g.memberByID[string(id)]
+	if !ok {
+		return nil, 0
+	}
+	return g.members[idx], idx
 }
 
 // IncrementHeight is called when a proposal is committed and the group progress to
@@ -134,6 +155,9 @@ func (g *WeightedRoundRobinGroup) IncrementHeight(fromRound uint32, memberUpdate
 	if len(memberUpdates) > 0 {
 		// we now have our new membership set. Let's now order them correctly
 		g.sort()
+
+		// update the memberByID map
+		g.updateMemberMap()
 
 		// calculate the new total voting power
 		g.calculateTotalVotingPower()
@@ -256,6 +280,12 @@ func (g *WeightedRoundRobinGroup) checkMemberUniqueness() error {
 		}
 	}
 	return nil
+}
+
+func (g *WeightedRoundRobinGroup) updateMemberMap() {
+	for idx, m := range g.members {
+		g.memberByID[string(m.ID())] = uint(idx)
+	}
 }
 
 func (g *WeightedRoundRobinGroup) calculateTotalVotingPower() {
