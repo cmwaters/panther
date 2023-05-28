@@ -63,6 +63,8 @@ type Engine struct {
 	logger zerolog.Logger
 }
 
+// REVIEW: I think we should have namespace as mandatory param here.
+
 // New creates a new consensus engine
 func New(gossip Gossip, signer sign.Signer, parameters Parameters, opts ...Option) *Engine {
 	e := &Engine{
@@ -85,6 +87,15 @@ const (
 	Off = false
 	On  = true
 )
+
+// REVIEW:
+//  Are we sure we want to make the Start blocking for the whole lifecycle of the application?
+//  If so, it's also not clear why we would need a seperate Stop method, if the caller can just cancel
+//  the context given to Start to stop the Engine.
+//
+//  This is also like the central application loop, which I would move to a higher level object.
+//  I think we should follow single responsibility here any move this loop to an entity responsible
+//  for this operation.
 
 // Start implements the Service interface and starts the consensus engine
 func (e *Engine) Start(ctx context.Context, height uint64, app app.StateMachine) error {
@@ -202,6 +213,8 @@ func (e *Engine) Wait() <-chan struct{} {
 }
 
 var ErrApplicationShutdown = errors.New("application requested termination")
+
+// REVIEW: :+1:
 
 // unrecoverable errors indicate that the consensus engine
 // is in a state that is not recoverable. It thus logs the
