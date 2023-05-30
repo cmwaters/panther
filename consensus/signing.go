@@ -7,12 +7,10 @@ import (
 	"math"
 )
 
-type VoteType uint8
-
 const (
 	// There are three initial vote types necessary for the protocol:
 	// Proposal, Lock and Commit.
-	PROPOSAL_TYPE VoteType = iota + 1
+	PROPOSAL_TYPE = iota + 1
 	LOCK_TYPE
 	COMMIT_TYPE
 

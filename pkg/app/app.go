@@ -16,12 +16,12 @@ type (
 		Finalize(context.Context, uint64, []byte) error
 	}
 
-	// Initialize is called at the start of the each height and provides the 
+	// Initialize is called at the start of the each height and provides the
 	// group or participants involved in consensus
 	Initialize func(context.Context, uint64) (group.Group, error)
 
 	// Propose calls for a proposal to be provided to the consensus engine and
-	// put forth to the network. 
+	// put forth to the network.
 	Propose func(context.Context, uint64) ([]byte, error)
 
 	// VerifyProposal allows the state machine to also determine

@@ -8,7 +8,7 @@ import (
 
 func (e *Engine) receiveProposals(
 	ctx context.Context,
-	tally *Tally,
+	executor *Executor,
 	verifier *Verifier,
 	store *Store,
 ) error {
@@ -30,7 +30,7 @@ func (e *Engine) receiveProposals(
 			return fmt.Errorf("received proposal for wrong height, exp %d, got %d", height, proposal.Height)
 		}
 
-		err = e.handleProposal(ctx, proposal, tally, verifier, store)
+		err = e.handleProposal(ctx, proposal, executor, verifier, store)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -50,7 +50,7 @@ func (e *Engine) receiveProposals(
 
 func (e *Engine) receiveVotes(
 	ctx context.Context,
-	tally *Tally,
+	executor *Executor,
 	verifier *Verifier,
 	store *Store,
 ) error {
@@ -70,7 +70,7 @@ func (e *Engine) receiveVotes(
 		}
 
 		go func() {
-			err := e.handleVote(ctx, vote, tally, verifier, store)
+			err := e.handleVote(ctx, vote, executor, verifier, store)
 			if err != nil {
 				// check if the context was cancelled
 				if ctx.Err() != nil {
@@ -95,7 +95,7 @@ func (e *Engine) receiveVotes(
 func (e *Engine) handleProposal(
 	ctx context.Context,
 	proposal *Proposal,
-	tally *Tally,
+	executor *Executor,
 	verifier *Verifier,
 	store *Store,
 ) error {
@@ -108,7 +108,7 @@ func (e *Engine) handleProposal(
 		e.logger.Info().
 			Uint64("height", proposal.Height).
 			Uint32("round", proposal.Round).
-			Msg("proposal already in tally")
+			Msg("proposal already in executor")
 		return nil
 	}
 
@@ -118,11 +118,11 @@ func (e *Engine) handleProposal(
 		return err
 	}
 
-	// Add the proposal to the tally
+	// Add the proposal to the executor
 	store.AddProposal(proposal)
 
 	// pass the proposal on to the state machine to process
-	tally.ProcessProposal(proposal.Round)
+	executor.ProcessProposal(proposal.Round)
 
 	return nil
 }
@@ -130,7 +130,7 @@ func (e *Engine) handleProposal(
 func (e *Engine) handleVote(
 	ctx context.Context,
 	vote *Vote,
-	tally *Tally,
+	executor *Executor,
 	verifier *Verifier,
 	store *Store,
 ) error {
@@ -143,7 +143,7 @@ func (e *Engine) handleVote(
 		e.logger.Info().
 			Uint64("height", vote.Height).
 			Uint32("round", vote.Round).
-			Msg("vote is already in tally")
+			Msg("vote is already in executor")
 		return nil
 	}
 
@@ -170,7 +170,7 @@ func (e *Engine) handleVote(
 	}
 
 	votersWeight := verifier.GetMember(vote.MemberIndex).Weight()
-	tally.ProcessVote(vote.Round, vote.ProposalRound, votersWeight, vote.Commit)
+	executor.ProcessVote(vote.Round, vote.ProposalRound, votersWeight, VoteType(vote.Commit))
 
 	return nil
 }

@@ -10,7 +10,7 @@ import (
 type (
 	// Service embodies a process that is perpetually running the underlying consensus
 	// protocol. Each iteration is known as a height. The service starts by being specified
-	// a height and a state machine that it will perform replication on and continues until 
+	// a height and a state machine that it will perform replication on and continues until
 	// an error is encountered, or it is stopped.
 	Service interface {
 		Start(context.Context, uint64, app.StateMachine) error

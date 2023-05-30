@@ -1,290 +1,249 @@
 package consensus
 
-import (
-	"context"
-	"time"
-)
+import "fmt"
 
 const (
-	ProposeStep = iota + 1
-	LockStep
-	CommitStep
+	// Tally has three phases within a round:
+	//
+	// ProposePhase: enter at the start of a round if in that round, the
+	// process has not yet received a valid proposal. Exit once the
+	// process has voted LOCK on a proposal or after the ProposalTimeout
+	ProposePhase uint8 = iota + 1
+	// LockPhase: enter after voting LOCK on a proposal. Exit once
+	// the process has received 2f + 1 LOCK votes for any value
+	// and after the LockDelay period
+	LockPhase
+	// CommitPhase: enter after voting COMMIT in a round. Exit once
+	// the process has received 2f + 1 LOCK votes for any value. There
+	// is no timeout with this phase
+	CommitPhase
 
 	// We start at round 1, round 0 is the unset/null value
-	InitialRound = 1
-	NullProposal = 0
+	InitialRound uint32 = 1
+	NilProposal  uint32 = 0
+
+	LOCK   VoteType = false
+	COMMIT VoteType = true
 )
 
-type (
-	// Outputs:
-	// Tally is given hooks to vote or propose upon a state transition
-	VoteFn    func(context.Context, uint32, uint32, bool) error
-	ProposeFn func(context.Context, uint32) (bool, error)
-)
+type VoteType bool
 
 // Tally is the core struct responsible for implementing the consensus protocol. It can be viewed as
 // a single threaded Mealy state machine. Each incoming proposal, vote or timeout are the inputs. Each
 // input can produce a state transition and a set of outputs: Either to propose, vote or set a timeout.
-// This is all captured in the `Run` method.
+// This is all captured in the `Run` method which iteratively steps through the protocol until a value
+// is finalized.
+//
+// Inputs can be staged through the `ProcessVote` and `ProcessProposal` methods. Timeouts are created
+// and handled internally although the timeout durations are specified by the caller in the constructor.
+// It is assumed that votes for a proposal come strictly after the proposal itself.
 type Tally struct {
-	// round and step represent the state of the protocol. Each field is monotonically increasing.
+	// round and phase represent the state of the protocol. Each field is monotonically increasing.
 	round uint32
-	step  uint8
+	phase uint8
 	// roundState captures the votes gathered at each round and for what proposal
 	roundState map[uint32]*roundState
 
 	// lockedValue signals a possible prior value that the protocol has locked on i.e. has voted COMMIT
 	// for that value after seeing 2f+1 LOCK votes for that value.
-	lockedValue, lockedRound uint32
+	lockedProposal, lockedRound uint32
 
-	validValue, validRound uint32
-	
+	// validValue tracks the lowest round proposal that the process has seen. If a process is not
+	// locked on any proposal, it will vote LOCK for "validValue" in ProposePhase
+	validProposal uint32
 
 	// totalVotingPower is the total voting power of the group. Multiplied by the quorum fraction, provides
 	// the minimum voting power required to reach a quorum and invoke a state transition
 	totalVotingPower uint64
 
-	// selfWeight is the voting power of the node itself
-	selfWeight uint32
-
-	// proposalTimeout is the timeout for a proposal to be received in a round before being deemed invalid.
-	// If the timeout is reached, the protocol will vote nil for the round if it is not already locked on
-	// another value
-	proposalTimeout time.Duration
-
-	// Upon reaching 2f + 1 LOCK votes for any proposal, the protocol will wait for as long as
-	// "lockDelay", for a quorum of a specific value to manifest itself. If so, the protocol will
-	// lock and vote to COMMIT that value.
-	//
-	// A lock delay of 0, will mean that unless the first 2f + 1 in votes all LOCK a value, the
-	// process itself, will COMMIT nil for that round.
-	lockDelay time.Duration
-
-	// inputCh serializes all forms of input: timeouts, proposals and votes to a single buffered channel
-	inputCh chan input
-
-	// voteFn and proposeFn are hooks to the consensus engine to vote or propose upon a state transition
-	voteFn    VoteFn
-	proposeFn ProposeFn
-
-	// doneCh is a channel that is closed when the protocol has decided on a value, it returns the round
-	// of the proposal that was decided
-	doneCh chan uint32
-
-	// errCh collects
-	errCh chan error
+	// lastLockDelayRound is the last round that the
+	// timeout was triggered. It's used simply to prevent
+	// the timeout being called multiple times in a round
+	lastLockDelayRound uint32
 }
 
-func NewTally(
-	voteFn VoteFn,
-	proposeFn ProposeFn,
-	selfWeight uint32,
-	totalVotingPower uint64,
-	proposalTimeout,
-	lockDelay time.Duration,
-) *Tally {
+func NewTally(totalVotingPower uint64) *Tally {
 	return &Tally{
-		doneCh:           make(chan uint32), // done should only happen once (does not need to be buffered)
-		inputCh:          make(chan input, 100),
-		voteFn:           voteFn,
-		proposeFn:        proposeFn,
-		selfWeight:       selfWeight,
 		totalVotingPower: totalVotingPower,
 		round:            InitialRound,
-		step:             ProposeStep,
+		phase:            ProposePhase,
 		roundState:       make(map[uint32]*roundState),
-		proposalTimeout:  proposalTimeout,
-		lockDelay:        lockDelay,
 	}
 }
 
-// Run is the main loop of the Tally. It is responsible for processing all serialized inputs:
-// timeouts, proposals and votes, performing state transitions and producing outputs: votes,
-// proposals and timeouts all according the logic of the consensus protocol.
-func (t *Tally) Run(ctx context.Context) error {
-	t.proposeFn(ctx, t.round)
-	t.scheduleProposalTimeout(t.proposalTimeout, t.round)
-	for {
-		// pull in next input from the channel
-		var input input
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		// exit if any of the outputs failed to execute
-		case err := <-t.errCh:
-			return err
-		case input = <-t.inputCh:
+// Step defines a discrete step in handling a single input (proposal, vote or timeout) according
+// to the logic of the consensus protocol.
+func (t *Tally) Step(input Input) Output {
+	switch {
+	// handle proposals
+	case input.proposal != nil:
+		if !t.seenValidProposal() && t.phase == ProposePhase && input.proposal.round <= t.round {
+			// this is the first valid proposal that the process has
+			// seen. It is in ProposePhase so it has not yet timed out.
+			// It it also not a proposal from a future round.
+			// Vote LOCK on the proposal
+			t.phase = LockPhase
+			return VoteOutput(input.proposal.round, LOCK)
 		}
-		switch {
-		// handle timeout
-		case input.timeout != nil:
-			// check if the timeout is for the current round
-			if input.timeout.round != t.round {
-				// the process has since moved to a later round
-				continue
+
+		// check if we can update the validValue
+		if t.validProposal == 0 || input.proposal.round < t.validProposal {
+			t.validProposal = input.proposal.round
+		}
+		// there is nothing more to do here. Other forms of voting happen
+		// while processing either a timeout or a vote
+
+	// handle votes
+	case input.vote != nil:
+		vote := input.vote
+		roundState := t.inRound(vote.round)
+		roundState.addVote(vote.proposalRound, vote.weight, vote.voteType)
+
+		// handle commit vote
+		if vote.voteType == COMMIT {
+			if vote.proposalRound != NilProposal && roundState.hasQuorum(vote.proposalRound, COMMIT) {
+				// the process has received 2f + 1 COMMIT votes for a proposal
+				// the value has been finalized
+				return FinalizedOutput(vote.proposalRound)
 			}
 
-			// check if the timeout is for the current step
-			if input.timeout.step != t.step {
-				// the process has since moved to a later step
-				continue
-			}
+			if t.round == vote.round {
 
-			// For both timeouts (ProposeStep and LockStep), the process will
-			// COMMIT nil for the round
-			//
-			// If ProposeStep: the process has not received a proposal within the timeout
-			// while expecting a proposal (i.e. the process is not yet locked on a value).
-			//
-			// If LockStep: the process has waited for more LOCK votes to arrive but not
-			// enough have been received to reach quorum and LOCK on a value.
-			t.voteCommit(ctx, t.round, NullProposal)
-
-		// handle proposals
-		case input.proposal != nil:
-			// check if we are locked on a value
-			if t.lockedValue == 0 {
-
-			}
-
-		// handle votes
-		case input.vote != nil:
-			vote := input.vote
-			roundState := t.inRound(vote.round)
-			roundState.addVote(vote.proposalRound, vote.weight, vote.commit)
-
-			// handle commit vote
-			if vote.commit {
-				if roundState.hasQuorum(vote.proposalRound, true) {
-					// the process has received 2f + 1 COMMIT votes for a proposal
-					// the value has been finalized
-					t.doneCh <- vote.proposalRound
-					return nil
-				}
-
-				if roundState.hasQuorumVoted(true) && t.round == vote.round {
-					// the process has received 2f + 1 COMMIT votes for any proposal in its current
-					// round. The process progresses to the next round
+				// If the process has received 2f + 1 COMMIT votes for ANY proposal in its current
+				// round. The process progresses to the next round (Note it may go through multiple
+				// rounds)
+				for roundState.hasQuorumVoted(COMMIT) {
 					t.round++
-					switch {
-					case t.isLocked():
-						t.voteCommit(ctx, t.round, t.lockedValue)
-						t.step = CommitStep
-					case t.seenValidProposal():
-						t.voteLock(ctx, t.round, t.validValue)
-						t.step = LockStep
-					default:
-						t.propose(ctx, t.round)
-						t.scheduleProposalTimeout(t.proposalTimeout, t.round)
-						t.step = ProposeStep
-					}
-					continue
+					roundState = t.inRound(t.round)
+				}
+				switch {
+				case t.isLocked():
+					// the process is already locked on a value i.e. it observed 2f + 1 LOCK votes.
+					// Two correct processes may lock on two different proposals but this mechanism
+					// guarantees that only one proposal is locked on by 2f + 1 processes and thus
+					// less than f + 1 correct process will lock on any other proposal.
+					// The process can immediately vote COMMIT again. If this process is part of the
+					// minority it will never receive 2f + 1 COMMIT votes (even if f are faulty) and
+					// will eventually observe 2f + 1 LOCK or COMMIT votes for a different proposal.
+					t.phase = CommitPhase
+					return VoteOutput(t.lockedProposal, COMMIT)
+				case t.seenValidProposal():
+					// The process is not locked on a proposal, but it has already seen a valid
+					// proposal. It does not need to propose a counter value but instead votes
+					// LOCK for the validProposal
+					t.phase = LockPhase
+					return VoteOutput(t.validProposal, LOCK)
+				default:
+					// The process has not received a valid proposal. It begins the new round by
+					// proposing a new value if it is the proposer and setting a timeout with
+					// which to receive a proposal.
+					t.phase = ProposePhase
+					return ProposalOutput()
 				}
 			}
-
-			// handle lock vote
-			if roundState.hasQuorum(vote.proposalRound, false) {
-				// the process has received 2f + 1 LOCK votes for a proposal
-				if t.lockedRound < vote.round {
-					// the process either hasn't locked on a value or a quorum has voted
-					// in a later round for another proposal. In either case we set the lock
-					// on that value
-					t.lockedValue = vote.proposalRound
-					t.lockedRound = vote.round
-					t.voteCommit(ctx, t.round, t.lockedValue)
-					t.step = CommitStep
-				}
-			}
-
-		default:
-			panic("nil input")
 		}
+
+		// handle lock vote
+		if roundState.hasQuorum(vote.proposalRound, LOCK) {
+			// the process has received 2f + 1 LOCK votes for a proposal
+			if t.lockedRound < vote.round {
+				// the process either hasn't locked on a value or a quorum has voted
+				// in a later round for another proposal. In either case we set the lock
+				// on that value
+				t.lockedProposal = vote.proposalRound
+				t.lockedRound = vote.round
+
+				// If the process is at the LockPhase, then we have not yet voted COMMIT
+				// for a value. Now that 2f + 1 are locked on a value, the process can
+				// vote COMMIT for that value. (Note it's perfectly valid to vote LOCK
+				// for one value and then vote COMMIT for a different value)
+				if t.phase == LockPhase {
+					t.phase = CommitPhase
+					return VoteOutput(t.lockedProposal, COMMIT)
+				}
+
+				// Given the assumption that votes for a proposal must come strictly
+				// after the proposal, it is impossible that the process is in the
+				// propose phase.
+
+				// If the process were in the commit phase, it means the process has
+				// already voted COMMIT, so we do nothing until the next round
+				return NoOutput
+			}
+		}
+
+		if roundState.hasQuorumVoted(LOCK) && t.round == vote.round && t.round > t.lastLockDelayRound {
+			// The process schedules a timeout here before deciding what its `COMMIT` vote
+			// will be. Without the timeout, unless the first 2f + 1 LOCK votes were all for
+			// a value, the process would COMMIT vote nil. By setting some delay for later
+			// votes to arrive, we improve the change that there is 2f + 1 LOCK for a value
+			// and that the process can immediately COMMIT that.
+			t.lastLockDelayRound = t.round
+			return TimeoutOutput()
+		}
+
+	// handle timeouts
+	case input.timeout != nil:
+		// check if the timeout is for the current round
+		if input.timeout.round != t.round {
+			// the process has since moved to a later round
+			return NoOutput
+		}
+
+		// check if the timeout is for the current phase
+		if input.timeout.phase != t.phase {
+			// the process has since moved to a later phase
+			return NoOutput
+		}
+
+		// For both timeouts (ProposePhase and LockPhase), the process will
+		// COMMIT nil for the round
+		//
+		// If ProposePhase: the process has not received a proposal within the timeout
+		// while expecting a proposal (i.e. the process is not yet locked on a value).
+		//
+		// If LockPhase: the process has waited for more LOCK votes to arrive but not
+		// enough have been received to reach quorum and LOCK on a value.
+		t.phase = CommitPhase
+		return VoteOutput(NilProposal, COMMIT)
+
+	default:
+		panic("nil input")
 	}
+
+	return NoOutput
 }
 
-// ProcessVote queues a vote to be processed by the Tally. It assumes that the vote is valid and unique.
-// It assumes that the value that the vote is voting for i.e. the round exists.
-func (t *Tally) ProcessVote(round, proposalRound, weight uint32, commit bool) {
-	t.inputCh <- voteInput(round, proposalRound, weight, commit)
+// Round returns the current round of the Tally.
+// Do not use concurrently with `Run`
+func (t *Tally) Round() uint32 {
+	return t.round
 }
 
-// ProcessProposal queues a proposal to be processed by the Tally. It assumes that the proposal is valid
-// and unique.
-func (t *Tally) ProcessProposal(round uint32) {
-	t.inputCh <- proposalInput(round)
+// Phase returns the current phase of the Tally.
+// Do not use concurrently with `Run`
+func (t *Tally) Phase() uint8 {
+	return t.phase
 }
 
-func (t *Tally) processTimeout(round uint32, step uint8) {
-	t.inputCh <- timeoutInput(round, step)
+// ValidProposal returns the process lowest valid proposal.
+// Do not use concurrently with `Run`
+func (t *Tally) ValidProposal() uint32 {
+	return t.validProposal
 }
 
-func (t *Tally) Done() <-chan uint32 {
-	return t.doneCh
-}
-
-func (t *Tally) scheduleProposalTimeout(period time.Duration, round uint32) {
-	go func() {
-		time.AfterFunc(period, func() {
-			t.processTimeout(round, ProposeStep)
-		})
-	}()
-}
-
-func (t *Tally) scheduleLockDelay(period time.Duration, round uint32) {
-	time.AfterFunc(period, func() {
-		t.processTimeout(round, LockStep)
-	})
-}
-
-func (t *Tally) propose(ctx context.Context, round uint32) {
-	go func () {
-		proposed, err := t.proposeFn(ctx, round)
-		if err != nil {
-			select {
-			case <-ctx.Done():
-			default:
-				t.errCh <- err
-			}
-		}
-		if proposed {
-			// queue the nodes own proposal to be processed
-			t.ProcessProposal(round)
-		}
-	}()
-}
-
-func (t *Tally) voteLock(ctx context.Context, round, proposalRound uint32) {
-	go func() {
-		if err := t.voteFn(ctx, round, proposalRound, false); err != nil {
-			select { // make sure to not block if the context is cancelled
-			case <-ctx.Done():
-			case t.errCh <- err:
-			}
-			return
-		}
-		t.ProcessVote(round, proposalRound, t.selfWeight, false)
-	}()
-}
-
-func (t *Tally) voteCommit(ctx context.Context, round, proposalRound uint32) {
-	go func() {
-		if err := t.voteFn(ctx, round, proposalRound, true); err != nil {
-			select { // make sure to not block if the context is cancelled
-			case <-ctx.Done():
-			case t.errCh <- err:
-			}
-			return
-		}
-		t.ProcessVote(round, proposalRound, t.selfWeight, true)
-	}()
+// LockedProposal returns the proposal value that the process is locked on
+// Do not use concurrently with `Run“
+func (t *Tally) LockedProposal() uint32 {
+	return t.lockedProposal
 }
 
 func (t *Tally) isLocked() bool {
-	return t.lockedValue != 0
+	return t.lockedProposal != 0
 }
 
 func (t *Tally) seenValidProposal() bool {
-	return t.validValue != 0
+	return t.validProposal != 0
 }
 
 func (t *Tally) hasProposal(round uint32) bool {
@@ -300,86 +259,194 @@ func (t *Tally) inRound(round uint32) *roundState {
 	return rs
 }
 
-type input struct {
-	proposal *proposalInfo
-	vote     *voteInfo
-	timeout  *timeoutInfo
-}
-
 type roundState struct {
-	hasProposal      bool
-	lockVotes        map[uint32]uint64
+	hasProposal            bool
+	lockVotes              map[uint32]uint64
 	totalLockVotingPower   uint64
-	commitVotes      map[uint32]uint64
+	commitVotes            map[uint32]uint64
 	totalCommitVotingPower uint64
-	totalVotingPower uint64
+	totalVotingPower       uint64
 }
 
 func newRoundState(totalVotingPower uint64) *roundState {
 	return &roundState{
-		lockVotes:   make(map[uint32]uint64),
-		commitVotes: make(map[uint32]uint64),
+		lockVotes:        make(map[uint32]uint64),
+		commitVotes:      make(map[uint32]uint64),
+		totalVotingPower: totalVotingPower,
 	}
 }
 
-func (rs *roundState) addVote(proposalRound, weight uint32, commit bool) {
-	if commit {
+func (rs *roundState) addVote(proposalRound, weight uint32, voteType VoteType) {
+	switch voteType {
+	case COMMIT:
 		rs.commitVotes[proposalRound] += uint64(weight)
 		rs.totalCommitVotingPower += uint64(weight)
-	} else {
+		// nil commits are counted also as nil lock votes
+		// a process only needs to vote nil once
+		if proposalRound == NilProposal {
+			rs.lockVotes[proposalRound] += uint64(weight)
+			rs.totalLockVotingPower += uint64(weight)
+		}
+	case LOCK:
 		rs.lockVotes[proposalRound] += uint64(weight)
 		rs.totalLockVotingPower += uint64(weight)
 	}
 }
 
-func (rs *roundState) hasQuorum(proposalRound uint32, commit bool) bool {
-	if commit {
-		return rs.commitVotes[proposalRound] * 3 >= rs.totalCommitVotingPower * 2
+func (rs *roundState) hasQuorum(proposalRound uint32, voteType VoteType) bool {
+	if voteType == COMMIT {
+		return rs.commitVotes[proposalRound]*3 >= rs.totalVotingPower*2
 	}
-	return rs.lockVotes[proposalRound] * 3 >= rs.totalLockVotingPower * 2
+	return rs.lockVotes[proposalRound]*3 >= rs.totalVotingPower*2
 }
 
-func (rs *roundState) hasQuorumVoted(commit bool) bool {
-	if commit {
-		return rs.totalCommitVotingPower * 3 >= rs.totalVotingPower * 2
+func (rs *roundState) hasQuorumVoted(voteType VoteType) bool {
+	if voteType == COMMIT {
+		return rs.totalCommitVotingPower*3 >= rs.totalVotingPower*2
 	}
-	return rs.totalLockVotingPower * 3 >= rs.totalVotingPower * 2
+	return rs.totalLockVotingPower*3 >= rs.totalVotingPower*2
 }
 
+type (
+	Input struct {
+		proposal *proposalEvent
+		vote     *voteEvent
+		timeout  *timeoutEvent
+	}
 
-type proposalInfo struct {
+	// Output and Input are the same
+	Output struct {
+		proposal               bool
+		timeout                bool
+		vote                   bool
+		voteType               VoteType
+		proposalRound          uint32
+		finalizedProposalRound uint32
+	}
+)
+
+func (i Input) String() string {
+	switch {
+	case i.proposal != nil:
+		return fmt.Sprintf("proposal{%d}", i.proposal.round)
+	case i.vote != nil:
+		voteType := "lock"
+		if i.vote.voteType == COMMIT {
+			voteType = "commit"
+		}
+		return fmt.Sprintf("vote{%s for %d @ %d:%d}", voteType, i.vote.proposalRound, i.vote.round, i.vote.weight)
+	case i.timeout != nil:
+		return fmt.Sprintf("timeout{%d, %d}", i.timeout.round, i.timeout.phase)
+	default:
+		return "none"
+	}
+}
+
+var NoOutput = Output{}
+
+func VoteOutput(proposalRound uint32, voteType VoteType) Output {
+	return Output{
+		vote:          true,
+		voteType:      voteType,
+		proposalRound: proposalRound,
+	}
+}
+
+func TimeoutOutput() Output {
+	return Output{timeout: true}
+}
+
+func ProposalOutput() Output {
+	return Output{proposal: true}
+}
+
+func FinalizedOutput(proposalRound uint32) Output {
+	return Output{finalizedProposalRound: proposalRound}
+}
+
+func (o Output) IsNone() bool {
+	return o.proposal == false && o.vote == false && o.timeout == false
+}
+
+func (o Output) IsProposal() bool {
+	return o.proposal
+}
+
+func (o Output) IsVote() bool {
+	return o.vote
+}
+
+func (o Output) IsTimeout() bool {
+	return o.timeout
+}
+
+func (o Output) HasFinalized() bool {
+	return o.finalizedProposalRound != 0
+}
+
+func (o Output) GetVoteInfo() (proposalRound uint32, voteType VoteType) {
+	if !o.vote {
+		return
+	}
+	return o.proposalRound, o.voteType
+}
+
+func (o Output) GetFinalizedProposalRound() uint32 {
+	return o.finalizedProposalRound
+}
+
+func (o Output) String() string {
+	switch {
+	case o.proposal:
+		return "proposal"
+	case o.vote:
+		voteType := "lock"
+		if o.voteType == COMMIT {
+			voteType = "commit"
+		}
+		return fmt.Sprintf("vote{%d, %s}", o.proposalRound, voteType)
+	case o.timeout:
+		return "timeout"
+	case o.finalizedProposalRound != 0:
+		return fmt.Sprintf("finalized{%d}", o.finalizedProposalRound)
+	default:
+		return "none"
+	}
+}
+
+type proposalEvent struct {
 	round uint32
 }
 
-type voteInfo struct {
+type voteEvent struct {
 	round, proposalRound, weight uint32
-	commit bool
+	voteType                     VoteType
 }
 
-type timeoutInfo struct {
+type timeoutEvent struct {
 	round uint32
-	step  uint8
+	phase uint8
 }
 
-func voteInput(round, proposalRound, weight uint32, commit bool) input {
-	return input{
-		vote: &voteInfo{
+func VoteInput(round, proposalRound, weight uint32, voteType VoteType) Input {
+	return Input{
+		vote: &voteEvent{
 			round:         round,
 			proposalRound: proposalRound,
 			weight:        weight,
-			commit:        commit,
+			voteType:      voteType,
 		},
 	}
 }
 
-func proposalInput(round uint32) input {
-	return input{
-		proposal: &proposalInfo{round},
+func ProposalInput(round uint32) Input {
+	return Input{
+		proposal: &proposalEvent{round},
 	}
 }
 
-func timeoutInput(round uint32, step uint8) input {
-	return input{
-		timeout: &timeoutInfo{round, step},
+func TimeoutInput(round uint32, phase uint8) Input {
+	return Input{
+		timeout: &timeoutEvent{round, phase},
 	}
 }

@@ -9,12 +9,11 @@ type Parameters struct {
 	// another value. It is recommended that the network use the same value for this parameter
 	ProposalTimeout time.Duration
 
-	// Upon reaching 2f + 1 LOCK votes for any proposal, the protocol will wait for as long as 
-	// "lockDelay", for a quorum of a specific value to manifest itself. If so, the protocol will 
+	// Upon reaching 2f + 1 LOCK votes for any proposal, the protocol will wait for as long as
+	// "lockDelay", for a quorum of a specific value to manifest itself. If so, the protocol will
 	// lock and vote to COMMIT that value.
-	// 
-	// A lock delay of 0, will mean that unless the first 2f + 1 in votes all LOCK a value, the 
+	//
+	// A lock delay of 0, will mean that unless the first 2f + 1 in votes all LOCK a value, the
 	// process itself, will COMMIT nil for that round
 	LockDelay time.Duration
 }
-

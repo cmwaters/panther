@@ -18,7 +18,7 @@ type Signer interface {
 	// to identify the member within the group. This must always return the same
 	// value
 	ID() []byte
-	
+
 	Sign(ctx context.Context, level Watermark, msg []byte) ([]byte, error)
 }
 

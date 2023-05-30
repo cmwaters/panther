@@ -10,7 +10,7 @@ import (
 type TestSigner struct {
 	privateKey ed25519.PrivateKey
 	publicKey  ed25519.PublicKey
-	level  Watermark
+	level      Watermark
 }
 
 func NewTestSigner() *TestSigner {

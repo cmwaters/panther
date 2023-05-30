@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto"
 	"errors"
-	"fmt"
 	"os"
 	"sync/atomic"
 
@@ -129,37 +128,38 @@ func (e *Engine) Commit(
 	// for each height, the process splits up the task through three components:
 	// - Verifier: responsible for verifying the validity of proposals and votes
 	// - Store: responsible for storing proposals and votes
-	// - Tally: responsible for tallying votes and proposals and for voting and
+	// - Executor: responsible for tallying votes and proposals and for voting and
 	//          proposing according to the rules of the consensus protocol
 	verifier := NewVerifier(e.namespace, height, group, e.hasher, verifyProposalFn)
 	store := NewStore()
 	voteFn, selfWeight := e.voteFn(height, group, store)
-	tally := NewTally(
+	executor := NewExecutor(
 		voteFn,
 		e.proposeFn(height, group, store, proposeFn),
 		selfWeight,
 		group.TotalWeight(),
 		e.parameters.ProposalTimeout,
 		e.parameters.LockDelay,
+		false,
 	)
-	
+
 	// The concurrency model of the system is relatively simple. There are three
-	// main go routines. The first two: receiveProposals and receiveVotes spawn 
-	// new threads for handling each vote and proposal thus handling, verfication 
-	// and storage are all highly parallelized. The last, the tally is run in a 
-	// separate thread. It uses a single channel to serailize all processed votes 
-	// and proposals and follow the logic of the cosensus protocol. When tally.Run() 
+	// main go routines. The first two: receiveProposals and receiveVotes spawn
+	// new threads for handling each vote and proposal thus handling, verfication
+	// and storage are all highly parallelized. The last, the executor is run in a
+	// separate thread. It uses a single channel to serailize all processed votes
+	// and proposals and follow the logic of the cosensus protocol. When executor.Run()
 	// finalizes a value, the round of the proposal is returned through the `Done`
 	// channel.
 	errCh := make(chan error, 3)
 	go func() {
-		errCh <- tally.Run(ctx)
+		errCh <- executor.Run(ctx)
 	}()
 	go func() {
-		errCh <- e.receiveProposals(ctx, tally, verifier, store)
+		errCh <- e.receiveProposals(ctx, executor, verifier, store)
 	}()
 	go func() {
-		errCh <- e.receiveVotes(ctx, tally, verifier, store)
+		errCh <- e.receiveVotes(ctx, executor, verifier, store)
 	}()
 
 	// There can be at most three errors for each of the goroutines.
@@ -171,8 +171,8 @@ func (e *Engine) Commit(
 			if err != nil {
 				return nil, err
 			}
-		
-		case proposalRound := <-tally.Done():
+
+		case proposalRound := <-executor.Done():
 			_, proposal := store.GetProposal(proposalRound)
 			return proposal.Data, nil
 		}
@@ -202,25 +202,3 @@ func (e *Engine) Wait() <-chan struct{} {
 }
 
 var ErrApplicationShutdown = errors.New("application requested termination")
-
-// unrecoverable errors indicate that the consensus engine
-// is in a state that is not recoverable. It thus logs the
-// error and shutsdown.
-type errUnrecoverable struct {
-	err error
-}
-
-func unrecoverable(err error) error {
-	return errUnrecoverable{
-		err: err,
-	}
-}
-
-func isUnrecoverable(err error) bool {
-	_, ok := err.(errUnrecoverable)
-	return ok
-}
-
-func (e errUnrecoverable) Error() string {
-	return fmt.Sprintf("unrecoverable error: %w", e.err)
-}

@@ -18,5 +18,4 @@ type Broadcaster interface {
 }
 
 type Store interface {
-	
 }
