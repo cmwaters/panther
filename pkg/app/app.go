@@ -13,7 +13,7 @@ type (
 		Initialize(context.Context, uint64) (group.Group, error)
 		Propose(context.Context, uint64) ([]byte, error)
 		VerifyProposal(context.Context, uint64, []byte) error
-		Finalize(context.Context, uint64, []byte) error
+		Finalize(context.Context, uint64, []byte, group.Commitment) error
 	}
 
 	// Initialize is called at the start of the each height and provides the

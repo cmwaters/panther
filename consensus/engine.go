@@ -101,11 +101,11 @@ func (e *Engine) Start(ctx context.Context, height uint64, app app.StateMachine)
 		if err != nil {
 			return err
 		}
-		data, err := e.Commit(ctx, height, group, app.Propose, app.VerifyProposal)
+		data, commitment, err := e.Commit(ctx, height, group, app.Propose, app.VerifyProposal)
 		if err != nil {
 			return err
 		}
-		if err := app.Finalize(ctx, height, data); err != nil {
+		if err := app.Finalize(ctx, height, data, commitment); err != nil {
 			return err
 		}
 		height++
@@ -121,7 +121,7 @@ func (e *Engine) Commit(
 	group group.Group,
 	proposeFn app.Propose,
 	verifyProposalFn app.VerifyProposal,
-) ([]byte, error) {
+) ([]byte, group.Commitment, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -169,15 +169,19 @@ func (e *Engine) Commit(
 		select {
 		case err := <-errCh:
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 
 		case proposalRound := <-executor.Done():
 			_, proposal := store.GetProposal(proposalRound)
-			return proposal.Data, nil
+			commitment, err := store.CreateCommitment(proposalRound)
+			if err != nil {
+				return nil, nil, err
+			}
+			return proposal.Data, commitment, nil
 		}
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
 func (e *Engine) Stop() error {
@@ -191,10 +195,6 @@ func (e *Engine) Stop() error {
 
 func (e *Engine) StopAtHeight(height uint64) error {
 	panic("not implemented")
-}
-
-func (e *Engine) IsRunning() bool {
-	return e.status.Load()
 }
 
 func (e *Engine) Wait() <-chan struct{} {

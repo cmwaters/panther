@@ -1,5 +1,7 @@
 package consensus
 
+import "github.com/cmwaters/halo/pkg/group"
+
 type Store struct {
 	// we index payloads by round as that is what votes reference
 	proposalByRounds map[uint32]*Proposal
@@ -42,24 +44,8 @@ func (s *Store) AddProposal(proposal *Proposal) {
 
 }
 
-func (s *Store) HasOnlyOneProposal() bool {
-	return false
-}
-
-func (s *Store) HasQuorumCommit(round uint32) bool {
-	return false
-}
-
-func (s *Store) GetQuorumCommit(round uint32) [][]byte {
-	return nil
-}
-
-func (s *Store) HasQuorumSignal(round uint32) bool {
-	return false
-}
-
-func (s *Store) HasQuorumAny(round uint32) bool {
-	return false
+func (s *Store) CreateCommitment(proposalRound uint32) (group.Commitment, error) {
+	return nil, nil
 }
 
 func (s *Store) Reset() {

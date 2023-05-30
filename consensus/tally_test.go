@@ -1,6 +1,7 @@
 package consensus_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/cmwaters/halo/consensus"
@@ -124,6 +125,52 @@ func TestLockingMechanism(t *testing.T) {
 	require.Equal(t, consensus.FinalizedOutput(3), output)
 }
 
-func TestFinalizeOnCorrectValue(t *testing.T) {
-	
+func TestIgnoreTimeoutWhenProgressingToNextPhase(t *testing.T) {
+	tally := consensus.NewTally(100)
+	output := tally.Step(consensus.ProposalInput(1))
+	require.Equal(t, consensus.VoteOutput(1, consensus.LOCK), output)
+	// A proposal timeout is received, but the tally has already moved
+	// to the LOCK phase and so ignores it
+	output = tally.Step(consensus.TimeoutInput(1, consensus.ProposePhase))
+	require.Equal(t, consensus.NoOutput, output)
+	require.EqualValues(t, consensus.LockPhase, tally.Phase())
+	output = tally.Step(consensus.VoteInput(1, 1, 67, consensus.LOCK))
+	require.Equal(t, consensus.VoteOutput(1, consensus.COMMIT), output)
+	// A lock delay timeout is triggered, but the tally has already
+	// moved to the COMMIT phase and so ignores it
+	output = tally.Step(consensus.TimeoutInput(1, consensus.LockPhase))
+	require.Equal(t, consensus.NoOutput, output)
+}
+
+func TestTallyingQuorum(t *testing.T) {
+	testCases := []uint32{1, 3, 33, 10000}
+	for _, faultyPower := range testCases {
+		t.Run(fmt.Sprintf("%d", faultyPower), func(t *testing.T) {
+			quorum := int(quorumPower(faultyPower))
+			tally := consensus.NewTally(totalPower(faultyPower))
+			_ = tally.Step(consensus.ProposalInput(1))
+			for i := 0; i < quorum-1; i++ {
+				output := tally.Step(consensus.VoteInput(1, 1, 1, consensus.LOCK))
+				require.Equal(t, consensus.NoOutput, output)
+			}
+			for i := 0; i < quorum-1; i++ {
+				output := tally.Step(consensus.VoteInput(1, 2, 1, consensus.LOCK))
+				if i == 0 {
+					require.Equal(t, consensus.TimeoutOutput(), output)
+				} else {
+					require.Equal(t, consensus.NoOutput, output)
+				}
+			}
+			require.Equal(t, consensus.LockPhase, tally.Phase())
+			output := tally.Step(consensus.TimeoutInput(1, consensus.LockPhase))
+			require.Equal(t, consensus.VoteOutput(consensus.NilProposal, consensus.COMMIT), output)
+			for i := 0; i < quorum-1; i++ {
+				output := tally.Step(consensus.VoteInput(1, 1, 1, consensus.COMMIT))
+				require.Equal(t, consensus.CommitPhase, tally.Phase())
+				require.Equal(t, consensus.NoOutput, output)
+			}
+			output = tally.Step(consensus.VoteInput(1, 1, 1, consensus.COMMIT))
+			require.Equal(t, consensus.FinalizedOutput(1), output)
+		})
+	}
 }

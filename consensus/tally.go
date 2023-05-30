@@ -108,7 +108,6 @@ func (t *Tally) Step(input Input) Output {
 			}
 
 			if t.round == vote.round {
-
 				// If the process has received 2f + 1 COMMIT votes for ANY proposal in its current
 				// round. The process progresses to the next round (Note it may go through multiple
 				// rounds)
@@ -116,29 +115,32 @@ func (t *Tally) Step(input Input) Output {
 					t.round++
 					roundState = t.inRound(t.round)
 				}
-				switch {
-				case t.isLocked():
-					// the process is already locked on a value i.e. it observed 2f + 1 LOCK votes.
-					// Two correct processes may lock on two different proposals but this mechanism
-					// guarantees that only one proposal is locked on by 2f + 1 processes and thus
-					// less than f + 1 correct process will lock on any other proposal.
-					// The process can immediately vote COMMIT again. If this process is part of the
-					// minority it will never receive 2f + 1 COMMIT votes (even if f are faulty) and
-					// will eventually observe 2f + 1 LOCK or COMMIT votes for a different proposal.
-					t.phase = CommitPhase
-					return VoteOutput(t.lockedProposal, COMMIT)
-				case t.seenValidProposal():
-					// The process is not locked on a proposal, but it has already seen a valid
-					// proposal. It does not need to propose a counter value but instead votes
-					// LOCK for the validProposal
-					t.phase = LockPhase
-					return VoteOutput(t.validProposal, LOCK)
-				default:
-					// The process has not received a valid proposal. It begins the new round by
-					// proposing a new value if it is the proposer and setting a timeout with
-					// which to receive a proposal.
-					t.phase = ProposePhase
-					return ProposalOutput()
+				if t.round > vote.round {
+					// the process has progressed to a new round
+					switch {
+					case t.isLocked():
+						// the process is already locked on a value i.e. it observed 2f + 1 LOCK votes.
+						// Two correct processes may lock on two different proposals but this mechanism
+						// guarantees that only one proposal is locked on by 2f + 1 processes and thus
+						// less than f + 1 correct process will lock on any other proposal.
+						// The process can immediately vote COMMIT again. If this process is part of the
+						// minority it will never receive 2f + 1 COMMIT votes (even if f are faulty) and
+						// will eventually observe 2f + 1 LOCK or COMMIT votes for a different proposal.
+						t.phase = CommitPhase
+						return VoteOutput(t.lockedProposal, COMMIT)
+					case t.seenValidProposal():
+						// The process is not locked on a proposal, but it has already seen a valid
+						// proposal. It does not need to propose a counter value but instead votes
+						// LOCK for the validProposal
+						t.phase = LockPhase
+						return VoteOutput(t.validProposal, LOCK)
+					default:
+						// The process has not received a valid proposal. It begins the new round by
+						// proposing a new value if it is the proposer and setting a timeout with
+						// which to receive a proposal.
+						t.phase = ProposePhase
+						return ProposalOutput()
+					}
 				}
 			}
 		}
@@ -246,10 +248,6 @@ func (t *Tally) seenValidProposal() bool {
 	return t.validProposal != 0
 }
 
-func (t *Tally) hasProposal(round uint32) bool {
-	return t.inRound(round).hasProposal
-}
-
 func (t *Tally) inRound(round uint32) *roundState {
 	rs, ok := t.roundState[round]
 	if !ok {
@@ -295,16 +293,16 @@ func (rs *roundState) addVote(proposalRound, weight uint32, voteType VoteType) {
 
 func (rs *roundState) hasQuorum(proposalRound uint32, voteType VoteType) bool {
 	if voteType == COMMIT {
-		return rs.commitVotes[proposalRound]*3 >= rs.totalVotingPower*2
+		return rs.commitVotes[proposalRound]*3 > rs.totalVotingPower*2
 	}
-	return rs.lockVotes[proposalRound]*3 >= rs.totalVotingPower*2
+	return rs.lockVotes[proposalRound]*3 > rs.totalVotingPower*2
 }
 
 func (rs *roundState) hasQuorumVoted(voteType VoteType) bool {
 	if voteType == COMMIT {
-		return rs.totalCommitVotingPower*3 >= rs.totalVotingPower*2
+		return rs.totalCommitVotingPower*3 > rs.totalVotingPower*2
 	}
-	return rs.totalLockVotingPower*3 >= rs.totalVotingPower*2
+	return rs.totalLockVotingPower*3 > rs.totalVotingPower*2
 }
 
 type (

@@ -17,7 +17,6 @@ type (
 		Stop() error
 		StopAtHeight(uint64) error
 		Wait() <-chan struct{}
-		IsRunning() bool
 	}
 
 	// Consensus is an interface that allows the caller to `Commit` a value, either
@@ -31,7 +30,7 @@ type (
 			group.Group,
 			app.Propose,
 			app.VerifyProposal,
-		) ([]byte, error)
+		) ([]byte, group.Commitment, error)
 	}
 
 	// Gossip is an interface which allows the consensus engine to both broadcast
