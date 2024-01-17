@@ -25,7 +25,7 @@ type Signer interface {
 type ErrAlreadySigned []uint64
 
 func (e ErrAlreadySigned) Error() string {
-	return fmt.Sprintf("already signed msg at mark %v", e)
+	return fmt.Sprintf("already signed msg at mark %d", e)
 }
 
 type Watermark []uint64

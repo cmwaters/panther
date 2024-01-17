@@ -46,7 +46,7 @@ func TestVoteOnEarliestSeenProposal(t *testing.T) {
 	// can vote LOCK for the proposal it saw in round 2
 	require.Equal(t, consensus.VoteOutput(2, consensus.LOCK), output)
 	// the tally now receives the missing proposal at round 1
-	output = tally.Step(consensus.ProposalInput(1))
+	_ = tally.Step(consensus.ProposalInput(1))
 	require.EqualValues(t, 1, tally.ValidProposal())
 	output = tally.Step(consensus.VoteInput(2, 0, 67, consensus.COMMIT))
 	// 2f + 1 COMMIT nil again and the tally progresses to the next round

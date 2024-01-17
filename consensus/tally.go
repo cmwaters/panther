@@ -372,7 +372,7 @@ type FinalizationEvent struct {
 }
 
 func (o Output) IsNone() bool {
-	return o.proposal == false && o.vote == false && o.timeout == false && o.finalize == false
+	return !o.proposal && !o.vote && !o.timeout && !o.finalize
 }
 
 func (o Output) IsProposal() bool {

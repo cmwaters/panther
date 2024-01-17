@@ -153,8 +153,7 @@ func (e *Engine) handleVote(
 	if proposalID == nil {
 		// we don't have the proposal yet, so we store the vote in pending
 		// and process it if the proposal comes
-		store.AddPendingVote(vote)
-		return nil
+		return store.AddPendingVote(vote)
 	}
 
 	// verify the vote's signature and other components

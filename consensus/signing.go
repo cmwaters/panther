@@ -52,7 +52,7 @@ func EncodeMsgToSign(
 	binary.BigEndian.PutUint32(roundBytes, round)
 	buf.Write(roundBytes)
 
-	if dataDigest == nil || len(dataDigest) == 0 {
+	if len(dataDigest) == 0 {
 		panic("data digest can not be empty")
 	}
 	if len(dataDigest) > MaxDataDigestSize {
