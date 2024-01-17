@@ -17,6 +17,12 @@ type SignatureSet struct {
 	signatures [][]byte
 }
 
+func NewSignatureSet(signatures [][]byte) Commitment {
+	return &SignatureSet{
+		signatures: signatures,
+	}
+}
+
 func (s *SignatureSet) Verify(group Group, value []byte) error {
 	if group.Size() != len(s.signatures) {
 		return fmt.Errorf("invalid signature size, expected %d, got %d", group.Size(), len(s.signatures))

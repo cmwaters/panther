@@ -34,8 +34,8 @@ func (e *Engine) voteFn(
 
 		// a vote signs over the hash of the bytes that the data proposes. This way a process can only
 		// vote (and verify a vote) if they have received the proposal
-		dataDigest, proposal := store.GetProposal(proposalRound)
-		if proposal == nil {
+		dataDigest := store.GetProposalID(proposalRound)
+		if dataDigest == nil {
 			return fmt.Errorf("proposal %d/%d for vote not found", height, proposalRound)
 		}
 
@@ -56,7 +56,7 @@ func (e *Engine) voteFn(
 		}
 
 		// add the vote to the store
-		_ = store.AddVote(vote)
+		store.AddVote(vote)
 
 		return nil
 	}, member.Weight()
@@ -108,6 +108,10 @@ func (v Vote) ValidateForm() error {
 
 	if v.Round == 0 {
 		return errors.New("vote round is zero")
+	}
+
+	if v.ProposalRound == 0 {
+		return errors.New("proposal round is zero")
 	}
 
 	if len(v.Signature) == 0 {

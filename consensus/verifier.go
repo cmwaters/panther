@@ -41,13 +41,13 @@ func (v *Verifier) GetMember(index uint32) group.Member {
 	return v.group.Member(uint(index))
 }
 
-func (v *Verifier) VerifyProposal(ctx context.Context, proposal *Proposal) error {
+func (v *Verifier) VerifyProposal(ctx context.Context, proposal *Proposal) ([]byte, error) {
 	if len(proposal.Signature) == 0 {
-		return errors.New("proposal signature missing")
+		return nil, errors.New("proposal signature missing")
 	}
 
 	if v.height != proposal.Height {
-		return fmt.Errorf("proposal is from a different height (exp: %d, got: %d)", v.height, proposal.Height)
+		return nil, fmt.Errorf("proposal is from a different height (exp: %d, got: %d)", v.height, proposal.Height)
 	}
 
 	errCh := make(chan error, 1)
@@ -64,11 +64,15 @@ func (v *Verifier) VerifyProposal(ctx context.Context, proposal *Proposal) error
 		// - The proposal comes from a member who is not currently the proposer
 		// - The proposer has incorrectly signed a different set of data
 		// - There has been a breaking change to how a proposal message is serialized
-		return errors.New("invalid proposal signature")
+		return nil, errors.New("invalid proposal signature")
 	}
 
 	// block until the application has verified the proposal
-	return <-errCh
+	if err := <-errCh; err != nil {
+		return nil, err
+	}
+
+	return dataDigest, nil
 }
 
 func (v *Verifier) Hash(data []byte) []byte {

@@ -42,7 +42,7 @@ type Executor struct {
 
 	// doneCh is a channel that is closed when the protocol has decided on a value, it returns the round
 	// of the proposal that was decided
-	doneCh chan uint32
+	doneCh chan FinalizationEvent
 
 	// errCh collects errors from execution
 	errCh chan error
@@ -67,7 +67,7 @@ func NewExecutor(
 	}
 	return &Executor{
 		tally:           NewTally(totalVotingPower),
-		doneCh:          make(chan uint32), // done should only happen once (does not need to be buffered)
+		doneCh:          make(chan FinalizationEvent), // done should only happen once (does not need to be buffered)
 		inputCh:         make(chan Input, 100),
 		voteFn:          voteFn,
 		proposeFn:       proposeFn,
@@ -114,7 +114,8 @@ func (e *Executor) Run(ctx context.Context) error {
 			// execute the output
 			switch {
 			case output.HasFinalized():
-				e.doneCh <- output.GetFinalizedProposalRound()
+				proposalRound, commitRound := output.GetFinalizedInfo()
+				e.doneCh <- FinalizationEvent{proposalRound, commitRound}
 			case output.IsNone():
 				continue
 			case output.IsProposal():
@@ -131,7 +132,7 @@ func (e *Executor) Run(ctx context.Context) error {
 }
 
 // Done returns a channel that will receive the proposal value upon finalization
-func (e *Executor) Done() <-chan uint32 {
+func (e *Executor) Done() <-chan FinalizationEvent {
 	return e.doneCh
 }
 

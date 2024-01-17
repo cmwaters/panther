@@ -122,7 +122,7 @@ func TestLockingMechanism(t *testing.T) {
 	require.Equal(t, consensus.VoteOutput(2, consensus.COMMIT), output)
 
 	output = tally.Step(consensus.VoteInput(3, 3, 67, consensus.COMMIT))
-	require.Equal(t, consensus.FinalizedOutput(3), output)
+	require.Equal(t, consensus.FinalizedOutput(3, 3), output)
 }
 
 func TestIgnoreTimeoutWhenProgressingToNextPhase(t *testing.T) {
@@ -170,7 +170,7 @@ func TestTallyingQuorum(t *testing.T) {
 				require.Equal(t, consensus.NoOutput, output)
 			}
 			output = tally.Step(consensus.VoteInput(1, 1, 1, consensus.COMMIT))
-			require.Equal(t, consensus.FinalizedOutput(1), output)
+			require.Equal(t, consensus.FinalizedOutput(1, 1), output)
 		})
 	}
 }

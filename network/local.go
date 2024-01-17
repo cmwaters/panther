@@ -9,7 +9,7 @@ import (
 type LocalNetwork struct {
 }
 
-func NewLocalNetwork() *LocalNetwork {
+func NewLocalNetwork(nodes int) *LocalNetwork {
 	return &LocalNetwork{}
 }
 
@@ -24,5 +24,5 @@ func (g *LocalGossip) ReceiveProposal(context.Context, uint64) (*consensus.Propo
 func (g *LocalGossip) ReceiveVote(context.Context, uint64) (*consensus.Vote, error)
 func (g *LocalGossip) BroadcastProposal(context.Context, *consensus.Proposal) error
 func (g *LocalGossip) BroadcastVote(context.Context, *consensus.Vote) error
-func (g *LocalGossip) ReportProposal(context.Context, *consensus.Proposal) error
-func (g *LocalGossip) ReportVote(context.Context, *consensus.Vote) error
+func (g *LocalGossip) ReportInvalidProposal(context.Context, *consensus.Proposal, error) error
+func (g *LocalGossip) ReportInvalidVote(context.Context, *consensus.Vote, error) error

@@ -102,9 +102,9 @@ func (t *Tally) Step(input Input) Output {
 		// handle commit vote
 		if vote.voteType == COMMIT {
 			if vote.proposalRound != NilProposal && roundState.hasQuorum(vote.proposalRound, COMMIT) {
-				// the process has received 2f + 1 COMMIT votes for a proposal
+				// the process has received 2f + 1 COMMIT votes for a proposal in any round
 				// the value has been finalized
-				return FinalizedOutput(vote.proposalRound)
+				return FinalizedOutput(vote.proposalRound, vote.round)
 			}
 
 			if t.round == vote.round {
@@ -314,12 +314,13 @@ type (
 
 	// Output and Input are the same
 	Output struct {
-		proposal               bool
-		timeout                bool
-		vote                   bool
-		voteType               VoteType
-		proposalRound          uint32
-		finalizedProposalRound uint32
+		proposal      bool
+		timeout       bool
+		vote          bool
+		finalize      bool
+		voteType      VoteType
+		proposalRound uint32
+		commitRound   uint32
 	}
 )
 
@@ -358,12 +359,20 @@ func ProposalOutput() Output {
 	return Output{proposal: true}
 }
 
-func FinalizedOutput(proposalRound uint32) Output {
-	return Output{finalizedProposalRound: proposalRound}
+func FinalizedOutput(proposalRound, commitRound uint32) Output {
+	return Output{
+		finalize:      true,
+		proposalRound: proposalRound,
+		commitRound:   commitRound,
+	}
+}
+
+type FinalizationEvent struct {
+	proposalRound, commitRound uint32
 }
 
 func (o Output) IsNone() bool {
-	return o.proposal == false && o.vote == false && o.timeout == false
+	return o.proposal == false && o.vote == false && o.timeout == false && o.finalize == false
 }
 
 func (o Output) IsProposal() bool {
@@ -379,7 +388,7 @@ func (o Output) IsTimeout() bool {
 }
 
 func (o Output) HasFinalized() bool {
-	return o.finalizedProposalRound != 0
+	return o.finalize
 }
 
 func (o Output) GetVoteInfo() (proposalRound uint32, voteType VoteType) {
@@ -389,8 +398,8 @@ func (o Output) GetVoteInfo() (proposalRound uint32, voteType VoteType) {
 	return o.proposalRound, o.voteType
 }
 
-func (o Output) GetFinalizedProposalRound() uint32 {
-	return o.finalizedProposalRound
+func (o Output) GetFinalizedInfo() (uint32, uint32) {
+	return o.proposalRound, o.commitRound
 }
 
 func (o Output) String() string {
@@ -405,8 +414,8 @@ func (o Output) String() string {
 		return fmt.Sprintf("vote{%d, %s}", o.proposalRound, voteType)
 	case o.timeout:
 		return "timeout"
-	case o.finalizedProposalRound != 0:
-		return fmt.Sprintf("finalized{%d}", o.finalizedProposalRound)
+	case o.finalize:
+		return fmt.Sprintf("finalized{%d, %d}", o.proposalRound, o.commitRound)
 	default:
 		return "none"
 	}

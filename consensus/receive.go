@@ -40,9 +40,9 @@ func (e *Engine) receiveProposals(
 				Uint64("height", height).
 				Msg("invalid proposal")
 
-			err = e.gossip.ReportProposal(ctx, proposal)
+			err = e.gossip.ReportInvalidProposal(ctx, proposal, err)
 			if err != nil {
-				e.logger.Err(err).Msg("reporting proposal")
+				e.logger.Err(err).Msg("reporting invalid proposal")
 			}
 		}
 	}
@@ -82,7 +82,7 @@ func (e *Engine) receiveVotes(
 					Str("vote", vote.String()).
 					Msg("invalid vote")
 
-				err = e.gossip.ReportVote(ctx, vote)
+				err = e.gossip.ReportInvalidVote(ctx, vote, err)
 				if err != nil {
 					e.logger.Err(err).Msg("reporting vote")
 				}
@@ -114,12 +114,13 @@ func (e *Engine) handleProposal(
 
 	// Verify the proposal. Including that it came from the correct proposer and
 	// that the signature for the data is valid.
-	if err := verifier.VerifyProposal(ctx, proposal); err != nil {
+	proposalID, err := verifier.VerifyProposal(ctx, proposal)
+	if err != nil {
 		return err
 	}
 
 	// Add the proposal to the executor
-	store.AddProposal(proposal)
+	store.AddProposal(proposal, proposalID)
 
 	// pass the proposal on to the state machine to process
 	executor.ProcessProposal(proposal.Round)
@@ -148,13 +149,11 @@ func (e *Engine) handleVote(
 	}
 
 	// Get the proposal to verify the vote against
-	proposalID, _ := store.GetProposal(vote.ProposalRound)
+	proposalID := store.GetProposalID(vote.ProposalRound)
 	if proposalID == nil {
-		if vote.Height == verifier.Height() {
-			store.AddPendingVote(vote)
-		}
-		// TODO: We may want to consider handling votes at the height directly above
-		// the nodes current state.
+		// we don't have the proposal yet, so we store the vote in pending
+		// and process it if the proposal comes
+		store.AddPendingVote(vote)
 		return nil
 	}
 
@@ -163,11 +162,7 @@ func (e *Engine) handleVote(
 		return err
 	}
 
-	added := store.AddVote(vote)
-	if !added {
-		// there will have been no state transition so we can exit early
-		return nil
-	}
+	store.AddVote(vote)
 
 	votersWeight := verifier.GetMember(vote.MemberIndex).Weight()
 	executor.ProcessVote(vote.Round, vote.ProposalRound, votersWeight, VoteType(vote.Commit))

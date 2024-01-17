@@ -19,5 +19,5 @@ func (g *LibP2PGossip) ReceiveProposal(context.Context, uint64) (*consensus.Prop
 func (g *LibP2PGossip) ReceiveVote(context.Context, uint64) (*consensus.Vote, error)
 func (g *LibP2PGossip) BroadcastProposal(context.Context, *consensus.Proposal) error
 func (g *LibP2PGossip) BroadcastVote(context.Context, *consensus.Vote) error
-func (g *LibP2PGossip) ReportProposal(context.Context, *consensus.Proposal) error
-func (g *LibP2PGossip) ReportVote(context.Context, *consensus.Vote) error
+func (g *LibP2PGossip) ReportInvalidProposal(context.Context, *consensus.Proposal, error) error
+func (g *LibP2PGossip) ReportInvalidVote(context.Context, *consensus.Vote, error) error

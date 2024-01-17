@@ -58,7 +58,7 @@ func (e *Engine) proposeFn(
 		}
 
 		// add the proposal to the store
-		store.AddProposal(proposal)
+		store.AddProposal(proposal, dataDigest)
 
 		return true, nil
 	}

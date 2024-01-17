@@ -131,7 +131,7 @@ func (e *Engine) Commit(
 	// - Executor: responsible for tallying votes and proposals and for voting and
 	//          proposing according to the rules of the consensus protocol
 	verifier := NewVerifier(e.namespace, height, group, e.hasher, verifyProposalFn)
-	store := NewStore()
+	store := NewStore(group.Size())
 	voteFn, selfWeight := e.voteFn(height, group, store)
 	executor := NewExecutor(
 		voteFn,
@@ -172,9 +172,9 @@ func (e *Engine) Commit(
 				return nil, nil, err
 			}
 
-		case proposalRound := <-executor.Done():
-			_, proposal := store.GetProposal(proposalRound)
-			commitment, err := store.CreateCommitment(proposalRound)
+		case finalized := <-executor.Done():
+			proposal := store.GetProposal(finalized.proposalRound)
+			commitment, err := store.CreateCommitment(finalized.proposalRound, finalized.commitRound)
 			if err != nil {
 				return nil, nil, err
 			}

@@ -55,7 +55,7 @@ type (
 	}
 
 	Reporter interface {
-		ReportProposal(context.Context, *Proposal) error
-		ReportVote(context.Context, *Vote) error
+		ReportInvalidProposal(context.Context, *Proposal, error) error
+		ReportInvalidVote(context.Context, *Vote, error) error
 	}
 )
