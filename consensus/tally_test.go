@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/cmwaters/halo/consensus"
+	"github.com/cmwaters/panther/consensus"
 	"github.com/stretchr/testify/require"
 )
 

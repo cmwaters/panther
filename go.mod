@@ -1,4 +1,4 @@
-module github.com/cmwaters/halo
+module github.com/cmwaters/panther
 
 go 1.19
 

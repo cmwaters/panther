@@ -3,8 +3,8 @@ package consensus
 import (
 	"context"
 
-	"github.com/cmwaters/halo/pkg/app"
-	"github.com/cmwaters/halo/pkg/group"
+	"github.com/cmwaters/panther/pkg/app"
+	"github.com/cmwaters/panther/pkg/group"
 )
 
 type (

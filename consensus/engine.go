@@ -7,9 +7,9 @@ import (
 	"os"
 	"sync/atomic"
 
-	"github.com/cmwaters/halo/pkg/app"
-	"github.com/cmwaters/halo/pkg/group"
-	"github.com/cmwaters/halo/pkg/sign"
+	"github.com/cmwaters/panther/pkg/app"
+	"github.com/cmwaters/panther/pkg/group"
+	"github.com/cmwaters/panther/pkg/sign"
 	"github.com/rs/zerolog"
 )
 

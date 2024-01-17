@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/cmwaters/halo/pkg/group"
+	"github.com/cmwaters/panther/pkg/group"
 )
 
 type Store struct {
 	groupSize int
-	// roundLimit is how many rounds ahead of the latest round 
+	// roundLimit is how many rounds ahead of the latest round
 	// should the store accept votes for
 	roundLimit uint32
 

@@ -3,7 +3,7 @@ package network
 import (
 	"context"
 
-	"github.com/cmwaters/halo/consensus"
+	"github.com/cmwaters/panther/consensus"
 	"github.com/libp2p/go-libp2p/core/host"
 )
 

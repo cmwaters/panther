@@ -3,7 +3,7 @@ package app
 import (
 	"context"
 
-	"github.com/cmwaters/halo/pkg/group"
+	"github.com/cmwaters/panther/pkg/group"
 )
 
 type (

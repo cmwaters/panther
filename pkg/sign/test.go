@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 
-	"github.com/cmwaters/halo/pkg/group"
+	"github.com/cmwaters/panther/pkg/group"
 )
 
 type TestSigner struct {

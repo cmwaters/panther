@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/cmwaters/halo/pkg/group"
-	"github.com/cmwaters/halo/pkg/sign"
+	"github.com/cmwaters/panther/pkg/group"
+	"github.com/cmwaters/panther/pkg/sign"
 )
 
 // voteFn returns a function that the tally will call whenever a state transition results in
